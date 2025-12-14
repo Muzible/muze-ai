@@ -314,7 +314,7 @@ class MetadataAnalyzer:
         
         audio_files = []
         dir_path = Path(directory)
-        self.music_dir = dir_path  # Zapisz katalog główny do obliczania ścieżek względnych
+        self.music_dir = dir_path  # Save root directory for calculating relative paths
         
         if recursive:
             for ext in extensions:
@@ -418,14 +418,14 @@ class MetadataAnalyzer:
             if only_missing_genre and 'genre' not in track.missing_fields and 'genre_unmapped' not in track.missing_fields:
                 continue
             
-            # Oblicz ścieżkę względną do katalogu skanowania
+            # Calculate relative path to scan directory
             try:
                 relative_path = str(Path(track.file_path).relative_to(self.music_dir))
             except ValueError:
-                relative_path = track.file_path  # Fallback do pełnej ścieżki
+                relative_path = track.file_path  # Fallback to full path
             
             tracks_to_export.append({
-                'file_path': relative_path,  # Ścieżka względna
+                'file_path': relative_path,  # Relative path
                 'filename': track.filename,
                 'title': track.title or '',
                 'artist': track.artist or '',
@@ -449,17 +449,17 @@ class MetadataAnalyzer:
         
         print(f"📝 Wyeksportowano {len(tracks_to_export)} plików do uzupełnienia: {output_path}")
         
-        # Also export as CSV for easier editing (format kompatybilny z metadata_mapping_file!)
-        # Kolumny: filename,artist,genre - język wykrywany automatycznie przez Whisper!
+        # Also export as CSV for easier editing (format compatible with metadata_mapping_file!)
+        # Columns: filename,artist,genre - language detected automatically by Whisper!
         csv_path = output_path.replace('.json', '.csv')
         with open(csv_path, 'w', encoding='utf-8', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=['filename', 'artist', 'genre'])
             writer.writeheader()
             for track in tracks_to_export:
                 writer.writerow({
-                    'filename': track['file_path'],  # Ścieżka względna (nie tylko nazwa!)
+                    'filename': track['file_path'],  # Relative path (not just filename!)
                     'artist': track['artist'],
-                    'genre': track['genre_mapped'] or track['genre_original'] or '',  # Użyj zmapowanego jeśli jest
+                    'genre': track['genre_mapped'] or track['genre_original'] or '',  # Use mapped if available
                 })
         
         print(f"📝 CSV do edycji (kompatybilny z metadata_mapping_file): {csv_path}")

@@ -1,37 +1,37 @@
 """
-🎵 Build Dataset v2 - Pełny pipeline do tworzenia datasetu z segmentami
+🎵 Build Dataset v2 - Full pipeline for creating segmented datasets
 
-Łączy:
-- Ekstrakcję cech audio (z build_dataset.py)
-- Automatyczną detekcję segmentów (z segment_annotator.py)
-- Generację promptów per-segment
-- Metadane z CSV (jeśli dostępne)
+Combines:
+- Audio feature extraction (from build_dataset.py)
+- Automatic segment detection (from segment_annotator.py)
+- Per-segment prompt generation
+- Metadata from CSV (if available)
 - 🎤 Voice embeddings (Resemblyzer/ECAPA-TDNN)
 - 📝 Lyrics extraction (Whisper large-v3)
 - 💭 Text sentiment analysis
 - 🎵 Vocal detection per segment
-- 🥁 Beat grid i chord progression
+- 🥁 Beat grid and chord progression
 - 🎵 CLAP embeddings (audio-text multimodal)
 - 🔤 G2P Phoneme extraction (IPA)
 - 🤖 LLM-enhanced prompts (GPT-4o-mini)
 - 💾 Checkpoint/resume system
 
 🚀 GPU BATCH PROCESSING:
-    Użyj --batch_size > 1 i --device cuda dla znacznie szybszego przetwarzania.
-    Batch processing grupuje operacje GPU (Demucs, Whisper, CLAP).
+    Use --batch_size > 1 and --device cuda for much faster processing.
+    Batch processing groups GPU operations (Demucs, Whisper, CLAP).
     
-    Rekomendacje VRAM:
+    VRAM Recommendations:
     - 8GB VRAM:  --batch_size 2
     - 12GB VRAM: --batch_size 3
     - 16GB+ VRAM: --batch_size 4
 
-Użycie:
-    # 🚀 FULL POWER (domyślnie - wszystko włączone!)
+Usage:
+    # 🚀 FULL POWER (default - everything enabled!)
     python build_dataset_v2.py \\
         --audio_dir ./music/fma_small \\
         --output ./data_v2/dataset.json
     
-    # 🖥️ Z GPU batch processing (2-3x szybciej)
+    # 🖥️ With GPU batch processing (2-3x faster)
     python build_dataset_v2.py \\
         --audio_dir ./music \\
         --device cuda \\
@@ -39,41 +39,32 @@ Użycie:
         --checkpoint_dir ./checkpoints \\
         --output ./data_v2/dataset.json
     
-    # ⏱️ Sprawdź szacowany czas
+    # ⏱️ Check estimated time
     python build_dataset_v2.py \\
         --audio_dir ./music \\
         --estimate_time \\
         --batch_size 4 \\
         --device cuda
     
-    # 📋 Z ręcznymi metadanymi (gdy brak ID3 tagów)
+    # 📋 With manual metadata (when no ID3 tags)
     python build_dataset_v2.py \\
         --audio_dir ./music \\
         --metadata_mapping ./metadata.json \\
         --output ./data_v2/dataset.json
     
-    # 💾 Z checkpointami (resume on crash)
+    # 💾 With checkpoints (resume on crash)
     python build_dataset_v2.py \\
         --audio_dir ./music \\
         --checkpoint_dir ./checkpoints \\
         --run_name "gpu1_hiphop" \\
         --output ./data_v2/dataset.json
     
-    # 🔄 Wznów przerwany build
+    # 🔄 Resume interrupted build
     python build_dataset_v2.py \\
         --audio_dir ./music \\
         --checkpoint_dir ./checkpoints \\
         --resume_run_id abc123 \\
         --output ./data_v2/dataset.json
-
-🔑 WYMAGANE ZMIENNE ŚRODOWISKOWE:
-    OPENAI_API_KEY - klucz API OpenAI do wzbogacania promptów (GPT-4o-mini)
-    
-    Ustaw przed uruchomieniem:
-        export OPENAI_API_KEY="sk-..."
-    
-    Lub dodaj do ~/.zshrc / ~/.bashrc dla stałego użycia.
-    Jeśli nie ustawiony, LLM prompt enhancement będzie pominięty.
 """
 
 import os
@@ -88,14 +79,13 @@ from pathlib import Path
 from datetime import datetime
 
 # ============================================================================
-# OPENAI API KEY - pobierany ze zmiennej środowiskowej
+# OPENAI API KEY - Load from environment variable
+# Set via: export OPENAI_API_KEY="sk-..."
 # ============================================================================
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
-    print("⚠️  OPENAI_API_KEY nie jest ustawiony!")
-    print("   LLM prompt enhancement będzie pominięty.")
-    print("   Ustaw: export OPENAI_API_KEY='sk-...'")
-    print()
+    print("⚠️ WARNING: OPENAI_API_KEY not set. LLM prompt enhancement will be disabled.")
+    print("   Set it via: export OPENAI_API_KEY=\"sk-...\"")
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any, Tuple
 from enum import Enum
@@ -142,23 +132,23 @@ except ImportError:
 
 class LLMPromptEnhancer:
     """
-    Wzbogaca automatycznie generowane prompty używając OpenAI API.
+    Enhances automatically generated prompts using OpenAI API.
     
-    Zamienia sztywne rule-based prompty na naturalne, różnorodne opisy.
+    Transforms rigid rule-based prompts into natural, diverse descriptions.
     
-    Przykład:
+    Example:
         Input:  "Energetic hip-hop music with vocals featuring beats at fast tempo in C"
         Output: "Hard-hitting trap banger with aggressive 808s, rapid-fire vocals,
                  and a relentless energy that demands movement"
     """
     
-    # Klucz API OpenAI - pobierany ze zmiennej środowiskowej
-    DEFAULT_API_KEY = os.environ.get("OPENAI_API_KEY")
+    # Default OpenAI API key
+    DEFAULT_API_KEY = "sk-proj-...."
     
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-4o-mini",  # Tańszy, wystarczający do promptów
+        model: str = "gpt-4o-mini",  # Cheaper, sufficient for prompts
         batch_size: int = 10,
         cache_file: Optional[str] = None,
     ):
@@ -201,7 +191,7 @@ class LLMPromptEnhancer:
         language: str = "en",
     ) -> str:
         """
-        Wzbogaca pojedynczy prompt.
+        Enhances a single prompt.
         
         Args:
             base_prompt: Rule-based prompt
@@ -235,9 +225,9 @@ class LLMPromptEnhancer:
         context = "; ".join(context_parts) if context_parts else ""
         
         # System prompt
-        # ZAWSZE generujemy prompty po angielsku!
-        # Prompty służą do opisu muzycznego - text encoder trenowany na EN.
-        # Lyrics pozostają w oryginalnym języku (PL/EN/inne) dla generacji wokalu.
+        # ALWAYS generate prompts in English!
+        # Prompts are for music description - text encoder trained on EN.
+        # Lyrics remain in original language (PL/EN/other) for vocal generation.
         system_prompt = """You are a music description expert.
 Transform the given description into a natural, rich prompt for music generation.
 Keep key info (genre, tempo, mood), but:
@@ -280,7 +270,7 @@ Keep key info (genre, tempo, mood), but:
         prompts: List[Dict],  # [{'base_prompt': str, 'features': dict, ...}, ...]
     ) -> List[str]:
         """
-        Wzbogaca batch promptów (bardziej efektywne API usage).
+        Enhances a batch of prompts (more efficient API usage).
         """
         results = []
         
@@ -297,7 +287,7 @@ Keep key info (genre, tempo, mood), but:
         return results
     
     def save_cache(self):
-        """Zapisuje cache do pliku"""
+        """Saves cache to file"""
         if self.cache_file and self.cache:
             Path(self.cache_file).parent.mkdir(parents=True, exist_ok=True)
             with open(self.cache_file, 'w') as f:
@@ -311,15 +301,15 @@ Keep key info (genre, tempo, mood), but:
 
 class PhonemeProcessor:
     """
-    Konwersja tekstu na fonemy (IPA).
+    Text to phoneme (IPA) conversion.
     
-    Używa:
-    - Gruut dla języków: en, de, es, fr, it, ru, cs, ar, fa, nl, sv, sw
-    - Phonemizer/espeak-ng dla polskiego i innych nieobsługiwanych
+    Uses:
+    - Gruut for languages: en, de, es, fr, it, ru, cs, ar, fa, nl, sv, sw
+    - Phonemizer/espeak-ng for Polish and other unsupported languages
     
     Output format:
     {
-        'phonemes_ipa': 'jɛm kanapkɛ s panadɔlɛm',  # Pełny string IPA
+        'phonemes_ipa': 'jɛm kanapkɛ s panadɔlɛm',  # Full IPA string
         'words': [
             {'word': 'Jem', 'phonemes': ['j', 'ɛ', 'm']},
             {'word': 'kanapkę', 'phonemes': ['k', 'a', 'n', 'a', 'p', 'k', 'ɛ']},
@@ -328,7 +318,7 @@ class PhonemeProcessor:
     }
     """
     
-    # Języki obsługiwane przez Gruut
+    # Languages supported by Gruut
     GRUUT_LANGUAGES = {
         'en': 'en-us', 'en-us': 'en-us', 'en-gb': 'en-gb',
         'de': 'de-de', 'de-de': 'de-de',
@@ -342,7 +332,7 @@ class PhonemeProcessor:
         'ar': 'ar', 'fa': 'fa',
     }
     
-    # Języki dla Phonemizer/espeak-ng (w tym polski!)
+    # Languages for Phonemizer/espeak-ng (including Polish!)
     ESPEAK_LANGUAGES = {
         'pl': 'pl', 'polish': 'pl',
         'uk': 'uk', 'ukrainian': 'uk',
@@ -353,7 +343,7 @@ class PhonemeProcessor:
         'tr': 'tr', 'turkish': 'tr',
         'vi': 'vi', 'vietnamese': 'vi',
         'hi': 'hi', 'hindi': 'hi',
-        # I wiele innych - espeak obsługuje 100+ języków
+        # And many others - espeak supports 100+ languages
     }
     
     def __init__(self):
@@ -389,18 +379,18 @@ class PhonemeProcessor:
         language: str = 'en',
     ) -> Dict[str, Any]:
         """
-        Konwertuje tekst na fonemy IPA.
+        Converts text to IPA phonemes.
         
         Args:
-            text: Tekst do konwersji
-            language: Kod języka (np. 'pl', 'en', 'de')
+            text: Text to convert
+            language: Language code (e.g., 'pl', 'en', 'de')
             
         Returns:
             {
-                'phonemes_ipa': str,  # Pełny ciąg fonemów
+                'phonemes_ipa': str,  # Full phoneme string
                 'words': [{'word': str, 'phonemes': List[str]}],  # Per-word
                 'language': str,
-                'backend': str,  # 'gruut' lub 'espeak'
+                'backend': str,  # 'gruut' or 'espeak'
             }
         """
         if not text or not text.strip():
@@ -413,13 +403,13 @@ class PhonemeProcessor:
         
         lang_lower = language.lower() if language else 'en'
         
-        # Wybierz backend
+        # Select backend
         if lang_lower in self.GRUUT_LANGUAGES and self._check_gruut():
             return self._phonemize_gruut(text, lang_lower)
         elif self._check_phonemizer():
             return self._phonemize_espeak(text, lang_lower)
         else:
-            # Fallback - brak G2P
+            # Fallback - no G2P available
             return {
                 'phonemes_ipa': '',
                 'words': [],
@@ -429,7 +419,7 @@ class PhonemeProcessor:
             }
     
     def _phonemize_gruut(self, text: str, language: str) -> Dict[str, Any]:
-        """Użyj Gruut dla obsługiwanych języków"""
+        """Use Gruut for supported languages"""
         from gruut import sentences
         
         gruut_lang = self.GRUUT_LANGUAGES.get(language, 'en-us')
@@ -446,7 +436,7 @@ class PhonemeProcessor:
                             'phonemes': list(word.phonemes),
                         })
                         all_phonemes.extend(word.phonemes)
-                        all_phonemes.append(' ')  # Separator między słowami
+                        all_phonemes.append(' ')  # Separator between words
             
             phonemes_ipa = ''.join(all_phonemes).strip()
             
@@ -470,19 +460,19 @@ class PhonemeProcessor:
             }
     
     def _phonemize_espeak(self, text: str, language: str) -> Dict[str, Any]:
-        """Użyj Phonemizer/espeak-ng (szczególnie dla polskiego!)"""
+        """Use Phonemizer/espeak-ng (especially for Polish!)"""
         from phonemizer import phonemize
         from phonemizer.separator import Separator
         
-        # Mapuj język na kod espeak
+        # Map language to espeak code
         espeak_lang = self.ESPEAK_LANGUAGES.get(language, language)
         
-        # Sprawdź czy język jest obsługiwany
+        # Check if language is supported
         try:
             from phonemizer.backend import EspeakBackend
             supported = EspeakBackend.supported_languages()
             if espeak_lang not in supported:
-                # Spróbuj bez regionu
+                # Try without region
                 espeak_lang = espeak_lang.split('-')[0]
                 if espeak_lang not in supported:
                     espeak_lang = 'en-us'  # Fallback
@@ -490,7 +480,7 @@ class PhonemeProcessor:
             pass
         
         try:
-            # Phonemize całego tekstu
+            # Phonemize entire text
             phonemes_ipa = phonemize(
                 text,
                 language=espeak_lang,
@@ -513,7 +503,7 @@ class PhonemeProcessor:
                         strip=True,
                         preserve_punctuation=False,
                     )
-                    # Split na pojedyncze fonemy (przybliżone - espeak zwraca ciąg)
+                    # Split into individual phonemes (approximate - espeak returns string)
                     phoneme_list = list(word_phonemes.replace(' ', ''))
                     words_data.append({
                         'word': word,
@@ -544,9 +534,9 @@ class PhonemeProcessor:
 
 class ParallelProcessor:
     """
-    Orchestrator do równoległego przetwarzania audio.
+    Orchestrator for parallel audio processing.
     
-    Strategia optymalizacji:
+    Optimization strategy:
     
     📊 BOTTLENECK ANALYSIS:
     ┌─────────────────────┬────────┬────────┬─────────────┐
@@ -560,18 +550,18 @@ class ParallelProcessor:
     │ LLM (OpenAI API)    │ ❌     │ ❌     │ ~0.5s       │
     └─────────────────────┴────────┴────────┴─────────────┘
     
-    🎯 STRATEGIA:
-    1. GPU Queue: Demucs → Whisper → CLAP (sekwencyjnie na GPU)
-    2. CPU Pool: Librosa features (parallel na CPU cores)
+    🎯 STRATEGY:
+    1. GPU Queue: Demucs → Whisper → CLAP (sequential on GPU)
+    2. CPU Pool: Librosa features (parallel on CPU cores)
     3. Async: OpenAI API calls (non-blocking)
     
-    💡 UŻYCIE:
-    - Z GPU (--device cuda): ~20-40s/track
-    - Bez GPU (--device cpu): ~3-5min/track
+    💡 USAGE:
+    - With GPU (--device cuda): ~20-40s/track
+    - Without GPU (--device cpu): ~3-5min/track
     
-    🔧 TUNOWANIE:
-    - --workers N: liczba CPU workers dla librosa (default: cpu_count-2)
-    - --batch_size N: ile tracków w GPU batch (default: 1, więcej = więcej VRAM)
+    🔧 TUNING:
+    - --workers N: number of CPU workers for librosa (default: cpu_count-2)
+    - --batch_size N: how many tracks in GPU batch (default: 1, more = more VRAM)
     """
     
     def __init__(
@@ -579,7 +569,7 @@ class ParallelProcessor:
         device: str = "cpu",
         cpu_workers: Optional[int] = None,
         gpu_batch_size: int = 1,
-        prefetch_audio: int = 4,  # Ile plików ładować z wyprzedzeniem
+        prefetch_audio: int = 4,  # How many files to preload
     ):
         import multiprocessing
         
@@ -587,12 +577,12 @@ class ParallelProcessor:
         self.gpu_batch_size = gpu_batch_size
         self.prefetch_audio = prefetch_audio
         
-        # CPU workers - zostaw 2 rdzenie dla systemu
+        # CPU workers - leave 2 cores for system
         max_workers = multiprocessing.cpu_count() - 2
         self.cpu_workers = min(cpu_workers or max_workers, max_workers)
         self.cpu_workers = max(1, self.cpu_workers)
         
-        # Statystyki
+        # Statistics
         self.stats = {
             'demucs_time': 0,
             'whisper_time': 0,
@@ -606,7 +596,7 @@ class ParallelProcessor:
         print(f"   CPU workers: {self.cpu_workers}")
         print(f"   GPU batch size: {gpu_batch_size}")
         
-        # Sprawdź dostępność GPU
+        # Check GPU availability
         if device == "cuda":
             try:
                 import torch
@@ -615,11 +605,11 @@ class ParallelProcessor:
                     vram = torch.cuda.get_device_properties(0).total_memory / 1e9
                     print(f"   GPU: {gpu_name} ({vram:.1f} GB VRAM)")
                     
-                    # Rekomendacje batch size na podstawie VRAM
+                    # Batch size recommendations based on VRAM
                     if vram < 8:
                         print(f"   ⚠️ Low VRAM! Recommend --gpu_batch_size 1")
                     elif vram >= 16:
-                        print(f"   💡 High VRAM - możesz spróbować --gpu_batch_size 2")
+                        print(f"   💡 High VRAM - you can try --gpu_batch_size 2")
                 else:
                     print(f"   ⚠️ CUDA requested but not available! Falling back to CPU")
                     self.device = "cpu"
@@ -629,7 +619,7 @@ class ParallelProcessor:
     
     def estimate_time(self, num_tracks: int, avg_duration: float = 180) -> Dict[str, Any]:
         """
-        Szacuje czas przetwarzania na podstawie hardware.
+        Estimates processing time based on hardware.
         
         Returns:
             {
@@ -641,12 +631,12 @@ class ParallelProcessor:
         """
         if self.device == "cuda":
             # GPU estimates (RTX 3080 level)
-            demucs_per_track = 5  # sekund
+            demucs_per_track = 5  # seconds
             whisper_per_track = 3
             other_per_track = 2
             
             # Batch processing speedup
-            # Batch > 1 daje ~1.5-2x speedup (amortyzacja transfer overhead)
+            # Batch > 1 gives ~1.5-2x speedup (transfer overhead amortization)
             batch_factor = 1.0
             if self.gpu_batch_size > 1:
                 batch_factor = 1.0 / (1 + 0.3 * (self.gpu_batch_size - 1))
@@ -654,12 +644,12 @@ class ParallelProcessor:
             per_track = (demucs_per_track + whisper_per_track + other_per_track) * batch_factor
         else:
             # CPU estimates
-            demucs_per_track = 45  # sekund
+            demucs_per_track = 45  # seconds
             whisper_per_track = 20
             other_per_track = 5
             per_track = demucs_per_track + whisper_per_track + other_per_track
         
-        # Uwzględnij paralelizację CPU dla librosa
+        # Account for CPU parallelization for librosa
         librosa_factor = 1.0 / self.cpu_workers
         per_track += 3 * librosa_factor  # ~3s librosa per track
         
@@ -675,16 +665,16 @@ class ParallelProcessor:
         }
     
     def _get_recommendation(self, num_tracks: int, total_seconds: float) -> str:
-        """Generuje rekomendację dla użytkownika"""
+        """Generates recommendation for user"""
         hours = total_seconds / 3600
         
         if self.device == "cpu" and hours > 24:
             return (
                 f"⚠️ Estimated {hours:.1f}h on CPU! "
                 f"Consider:\n"
-                f"   1. Użyj GPU (--device cuda) - 10-20x szybciej\n"
-                f"   2. Wynajmij GPU cloud (vast.ai ~$0.30/h)\n"
-                f"   3. Podziel na części (--max_tracks {num_tracks//4})"
+                f"   1. Use GPU (--device cuda) - 10-20x faster\n"
+                f"   2. Rent GPU cloud (vast.ai ~$0.30/h)\n"
+                f"   3. Split into parts (--max_tracks {num_tracks//4})"
             )
         elif self.device == "cuda" and hours > 12:
             return (
@@ -698,7 +688,7 @@ class ParallelProcessor:
             return f"✅ Manageable ({hours:.1f}h)"
     
     def print_estimate(self, num_tracks: int):
-        """Wypisuje szacowany czas przed rozpoczęciem"""
+        """Prints estimated time before starting"""
         est = self.estimate_time(num_tracks)
         
         print(f"\n⏱️  Time estimate for {num_tracks} tracks:")
@@ -711,14 +701,14 @@ class ParallelProcessor:
 
 class BatchGPUProcessor:
     """
-    Batch processing dla operacji GPU-heavy.
+    Batch processing for GPU-heavy operations.
     
-    Zamiast przetwarzać jeden track na raz, grupujemy:
-    1. Ładowanie audio (parallel CPU)
-    2. Batch Demucs (GPU) - separacja wokali dla wielu tracków
-    3. Batch Whisper (GPU) - transkrypcja dla wielu tracków
-    4. Batch CLAP (GPU) - embeddingi dla wielu tracków
-    5. CPU features (parallel) - librosa w tle
+    Instead of processing one track at a time, we group:
+    1. Loading audio (parallel CPU)
+    2. Batch Demucs (GPU) - vocal separation for multiple tracks
+    3. Batch Whisper (GPU) - transcription for multiple tracks
+    4. Batch CLAP (GPU) - embeddings for multiple tracks
+    5. CPU features (parallel) - librosa in background
     
     ┌─────────────────────────────────────────────────────────┐
     │  PIPELINE (batch_size=4)                                │
@@ -777,7 +767,7 @@ class BatchGPUProcessor:
                 import torch
                 if torch.cuda.is_available():
                     vram = torch.cuda.get_device_properties(0).total_memory / 1e9
-                    # Szacunkowe zużycie VRAM per batch
+                    # Estimated VRAM usage per batch
                     # Demucs: ~2GB base + ~0.5GB per track
                     # Whisper large-v3: ~3GB
                     # CLAP: ~1GB
@@ -851,10 +841,10 @@ class BatchGPUProcessor:
         Batch vocal separation z Demucs.
         
         Args:
-            audio_batch: Lista krotek (audio_array, sample_rate)
+            audio_batch: List of tuples (audio_array, sample_rate)
             
         Returns:
-            Lista separowanych wokali (lub None dla błędów)
+            List of separated vocals (or None for errors)
         """
         import time
         start = time.time()
@@ -885,8 +875,8 @@ class BatchGPUProcessor:
                 tensors.append(t)
             
             # Process batch
-            # Demucs nie wspiera natywnie batch, więc iterujemy
-            # ale trzymamy model na GPU (amortyzacja transfer overhead)
+            # Demucs doesn't natively support batch, so we iterate
+            # but keep model on GPU (amortize transfer overhead)
             for i, tensor in enumerate(tensors):
                 try:
                     with torch.no_grad():
@@ -928,15 +918,15 @@ class BatchGPUProcessor:
         contexts: Optional[List[Dict]] = None,  # [{'artist': ..., 'genres': [...]}, ...]
     ) -> List[Dict]:
         """
-        Batch lyrics transcription z Whisper.
+        Batch lyrics transcription with Whisper.
         
         Args:
-            vocals_batch: Lista separowanych wokali
+            vocals_batch: List of separated vocals
             sample_rate: Sample rate
-            contexts: Opcjonalne konteksty (artist, genres) dla każdego tracka
+            contexts: Optional contexts (artist, genres) for each track
             
         Returns:
-            Lista wyników transkrypcji
+            List of transcription results
         """
         import time
         start = time.time()
@@ -991,7 +981,7 @@ class BatchGPUProcessor:
             genre_str = ', '.join(genres[:2])
             parts.append(f"Genre: {genre_str}.")
         
-        # Dodaj polskie słowa jeśli prawdopodobnie polski
+        # Add Polish words if probably Polish
         if artist and any(pl in artist.lower() for pl in ['zeus', 'taco', 'sokół', 'pezet', 'quebonafide']):
             parts.append("Tekst po polsku.")
         
@@ -1048,7 +1038,7 @@ class BatchGPUProcessor:
                 except Exception as e:
                     audio_embeddings.append(None)
             
-            # Text embeddings (jeśli podane)
+            # Text embeddings (if provided)
             if texts:
                 for text in texts:
                     if not text:
@@ -1085,14 +1075,14 @@ class BatchGPUProcessor:
         metadata_list: Optional[List[Dict]] = None,
     ) -> List[Dict]:
         """
-        Przetwarza batch plików audio przez GPU pipeline.
+        Processes batch of audio files through GPU pipeline.
         
         Args:
-            file_paths: Lista ścieżek do plików audio
-            metadata_list: Opcjonalne metadane dla każdego pliku
+            file_paths: List of paths to audio files
+            metadata_list: Optional metadata for each file
             
         Returns:
-            Lista słowników z wynikami GPU processing:
+            List of dictionaries with GPU processing results:
             [
                 {
                     'vocals': np.ndarray lub None,
@@ -1130,11 +1120,11 @@ class BatchGPUProcessor:
         
         # 4. Batch CLAP embeddings
         print(f"      🎵 Computing CLAP embeddings...")
-        # Użyj lyrics jako tekstu do embeddingu (lub placeholder)
+        # Use lyrics as text for embedding (or placeholder)
         texts = [l.get('text', '')[:200] for l in lyrics_list]  # Max 200 chars
         clap_audio, clap_text = self.batch_clap_embeddings(audio_batch, texts)
         
-        # Zbierz wyniki
+        # Collect results
         results = []
         for i in range(len(file_paths)):
             results.append({
@@ -1160,26 +1150,26 @@ class BatchGPUProcessor:
 
 class VocalProcessor:
     """
-    Przetwarza wokale: detekcja, embeddingi, lyrics, sentiment
+    Processes vocals: detection, embeddings, lyrics, sentiment
     
-    Ekstrahuje DWA typy embeddingów:
+    Extracts TWO types of embeddings:
     
-    1. voice_embedding (z miksu) → dla "w stylu X" (style transfer)
+    1. voice_embedding (from mix) → for "in style of X" (style transfer)
        - Resemblyzer 256-dim
-       - Używany do uśredniania per-artysta
+       - Used for averaging per-artist
     
-    2. voice_embedding_separated (z Demucs) → dla "jak X" (voice cloning)
-       - SpeechBrain ECAPA-TDNN 192-dim (dokładniejszy)
-       - Używany gdy chcemy dokładnie odwzorować głos
+    2. voice_embedding_separated (from Demucs) → for "like X" (voice cloning)
+       - SpeechBrain ECAPA-TDNN 192-dim (more accurate)
+       - Used when we want to exactly reproduce voice
     
-    Wybór trybu następuje w INFERENCE, nie tutaj!
+    Mode selection happens in INFERENCE, not here!
     """
     
     def __init__(
         self,
         sample_rate: int = 22050,
         use_demucs: bool = False,
-        whisper_model: str = "large-v3",  # Domyślnie najlepszy model!
+        whisper_model: str = "large-v3",  # Default best model!
         device: str = "cpu",
     ):
         self.sample_rate = sample_rate
@@ -1260,12 +1250,12 @@ class VocalProcessor:
     
     def detect_vocals(self, y: np.ndarray, sr: int) -> Tuple[bool, float]:
         """
-        Wykrywa czy w audio są wokale.
+        Detects if audio contains vocals.
         
-        Używa kombinacji:
-        - Spectral flatness (wokale mają niższą)
+        Uses combination of:
+        - Spectral flatness (vocals have lower)
         - Harmonic ratio
-        - Spectral contrast w zakresie wokalnym (300-3000 Hz)
+        - Spectral contrast in vocal range (300-3000 Hz)
         
         Returns:
             (has_vocals, vocal_confidence)
@@ -1274,7 +1264,7 @@ class VocalProcessor:
             # Harmonic-percussive separation
             y_harmonic, y_percussive = librosa.effects.hpss(y)
             
-            # Spectral flatness - wokale są mniej "flat"
+            # Spectral flatness - vocals are less "flat"
             flatness = librosa.feature.spectral_flatness(y=y_harmonic)
             avg_flatness = np.mean(flatness)
             
@@ -1287,8 +1277,8 @@ class VocalProcessor:
             total_energy = np.sum(y ** 2) + 1e-10
             harmonic_ratio = harmonic_energy / total_energy
             
-            # Heurystyka
-            # Niższa flatness + wyższy kontrast wokalny + wysoki harmonic ratio = wokale
+            # Heuristics
+            # Lower flatness + higher vocal contrast + high harmonic ratio = vocals
             vocal_score = (
                 (1 - avg_flatness) * 0.3 +
                 (vocal_band_contrast / 50) * 0.4 +  # Normalize
@@ -1305,10 +1295,10 @@ class VocalProcessor:
     
     def separate_vocals(self, y: np.ndarray, sr: int) -> Optional[np.ndarray]:
         """
-        Separuje wokale z miksu używając Demucs.
+        Separates vocals from mix using Demucs.
         
         Returns:
-            Vocal track jako numpy array lub None
+            Vocal track as numpy array or None
         """
         if not self.use_demucs:
             return None
@@ -1363,20 +1353,20 @@ class VocalProcessor:
         sr: int,
     ) -> Dict[str, Any]:
         """
-        Ekstrahuje OBA typy embeddingów dla późniejszego użycia w inference.
+        Extracts BOTH types of embeddings for later use in inference.
         
         Args:
-            y: Audio signal (pełny miks)
+            y: Audio signal (full mix)
             sr: Sample rate
             
         Returns:
             {
-                'embedding_mix': np.ndarray lub None,  # Z miksu (dla style_of)
-                'embedding_separated': np.ndarray lub None,  # Z wokali (dla voice_clone)
+                'embedding_mix': np.ndarray or None,  # From mix (for style_of)
+                'embedding_separated': np.ndarray or None,  # From vocals (for voice_clone)
                 'backend': str,  # 'resemblyzer', 'speechbrain'
-                'embedding_dim': int,  # 256 lub 192
+                'embedding_dim': int,  # 256 or 192
                 'separation_method': str,  # 'demucs', 'none'
-                'separated_vocals': np.ndarray lub None,  # Czyste wokale do zapisu
+                'separated_vocals': np.ndarray or None,  # Clean vocals to save
             }
         """
         result = {
@@ -1385,25 +1375,25 @@ class VocalProcessor:
             'backend': 'resemblyzer',
             'embedding_dim': 256,
             'separation_method': 'none',
-            'separated_vocals': None,  # NOWE: surowe audio wokali
+            'separated_vocals': None,  # NEW: raw vocals audio
         }
         
-        # 1. EMBEDDING Z MIKSU (dla style_of)
-        # Zawsze używamy Resemblyzer - wystarczający dla style transfer
+        # 1. EMBEDDING FROM MIX (for style_of)
+        # We always use Resemblyzer - sufficient for style transfer
         emb_mix = self._extract_resemblyzer_raw(y, sr)
         if emb_mix is not None:
             result['embedding_mix'] = emb_mix
             result['embedding_dim'] = 256
         
-        # 2. EMBEDDING Z SEPAROWANYCH WOKALI (dla voice_clone)
-        # Tylko jeśli mamy Demucs włączony
+        # 2. EMBEDDING FROM SEPARATED VOCALS (for voice_clone)
+        # Only if we have Demucs enabled
         if self.use_demucs:
             separated = self.separate_vocals(y, sr)
             if separated is not None and np.max(np.abs(separated)) > 0.01:
                 result['separation_method'] = 'demucs'
-                result['separated_vocals'] = separated  # NOWE: zapisz surowe wokale
+                result['separated_vocals'] = separated  # NEW: save raw vocals
                 
-                # Próbuj SpeechBrain (192-dim, dokładniejszy)
+                # Try SpeechBrain (192-dim, more accurate)
                 emb_sep = self._extract_speechbrain_raw(separated, sr)
                 if emb_sep is not None:
                     result['embedding_separated'] = emb_sep
@@ -1417,12 +1407,12 @@ class VocalProcessor:
         return result
     
     def _extract_resemblyzer_raw(self, audio: np.ndarray, sr: int) -> Optional[np.ndarray]:
-        """Ekstrakcja z Resemblyzer (256-dim) - tylko embedding"""
+        """Extraction with Resemblyzer (256-dim) - only embedding"""
         if self.resemblyzer_encoder is None:
             return None
         
         try:
-            # Resemblyzer wymaga 16kHz
+            # Resemblyzer requires 16kHz
             if sr != 16000:
                 audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
                 sr = 16000
@@ -1441,14 +1431,14 @@ class VocalProcessor:
             return None
     
     def _extract_speechbrain_raw(self, audio: np.ndarray, sr: int) -> Optional[np.ndarray]:
-        """Ekstrakcja z SpeechBrain ECAPA-TDNN (192-dim) - tylko embedding"""
+        """Extraction with SpeechBrain ECAPA-TDNN (192-dim) - only embedding"""
         if self.speechbrain_encoder is None:
             return None
         
         try:
             import torch
             
-            # SpeechBrain wymaga 16kHz
+            # SpeechBrain requires 16kHz
             if sr != 16000:
                 audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
             
@@ -1473,8 +1463,8 @@ class VocalProcessor:
         use_separated: bool = True,
     ) -> Tuple[Optional[np.ndarray], str, str]:
         """
-        [LEGACY] Ekstrahuje pojedynczy voice embedding.
-        Preferuj extract_all_embeddings() dla nowego kodu.
+        [LEGACY] Extracts single voice embedding.
+        Prefer extract_all_embeddings() for new code.
         """
         result = self.extract_all_embeddings(y, sr)
         
@@ -1486,18 +1476,18 @@ class VocalProcessor:
             return None, "", "audio"
     
     def _extract_resemblyzer(self, audio: np.ndarray, sr: int) -> Tuple[Optional[np.ndarray], str, str]:
-        """[LEGACY] Ekstrakcja z Resemblyzer (256-dim)"""
+        """[LEGACY] Extraction with Resemblyzer (256-dim)"""
         emb = self._extract_resemblyzer_raw(audio, sr)
         if emb is not None:
             return emb, "resemblyzer", "speaker"
         return None, "", "audio"
     
     def _extract_speechbrain(self, audio: np.ndarray, sr: int) -> Tuple[Optional[np.ndarray], str, str]:
-        """[LEGACY] Ekstrakcja z SpeechBrain ECAPA-TDNN (192-dim)"""
+        """[LEGACY] Extraction with SpeechBrain ECAPA-TDNN (192-dim)"""
         emb = self._extract_speechbrain_raw(audio, sr)
         if emb is not None:
             return emb, "speechbrain", "speaker"
-        # Fallback do Resemblyzer
+        # Fallback to Resemblyzer
         return self._extract_resemblyzer(audio, sr)
     
     def transcribe_lyrics(
@@ -1509,18 +1499,18 @@ class VocalProcessor:
         genres: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Transkrybuje lyrics używając Whisper large-v3 z inteligentnym promptem.
+        Transcribes lyrics using Whisper large-v3 with intelligent prompt.
         
         Args:
             y: Audio numpy array
             sr: Sample rate
-            language: Opcjonalny kod języka (np. 'pl', 'en')
-            artist: Nazwa artysty (pomaga w kontekście)
-            genres: Lista gatunków (pomaga określić styl)
+            language: Optional language code (e.g. 'pl', 'en')
+            artist: Artist name (helps with context)
+            genres: List of genres (helps determine style)
         
         Returns:
             {
-                'text': str,  # Pełny tekst
+                'text': str,  # Full text
                 'segments': [{'start': float, 'end': float, 'text': str}],
                 'language': str,
                 'confidence': float,
@@ -1530,7 +1520,7 @@ class VocalProcessor:
             return {'text': '', 'segments': [], 'language': None, 'confidence': 0.0}
         
         try:
-            # Whisper wymaga 16kHz
+            # Whisper requires 16kHz
             if sr != 16000:
                 audio = librosa.resample(y, orig_sr=sr, target_sr=16000)
             else:
@@ -1543,16 +1533,16 @@ class VocalProcessor:
             # Build intelligent initial_prompt for better transcription
             initial_prompt = self._build_transcription_prompt(artist, genres)
             
-            # Transcribe z initial_prompt
+            # Transcribe with initial_prompt
             result = self.whisper_model.transcribe(
                 audio,
                 language=language,
                 task="transcribe",
                 initial_prompt=initial_prompt,
-                # Dodatkowe opcje dla lepszej jakości
-                condition_on_previous_text=True,  # Kontekst między segmentami
-                no_speech_threshold=0.5,  # Mniej false positives
-                logprob_threshold=-1.0,  # Akceptuj więcej słów
+                # Additional options for better quality
+                condition_on_previous_text=True,  # Context between segments
+                no_speech_threshold=0.5,  # Less false positives
+                logprob_threshold=-1.0,  # Accept more words
             )
             
             return {
@@ -1579,20 +1569,20 @@ class VocalProcessor:
         genres: Optional[List[str]] = None,
     ) -> str:
         """
-        Buduje inteligentny prompt dla Whisper na podstawie kontekstu.
+        Builds intelligent prompt for Whisper based on context.
         
-        Whisper używa initial_prompt jako "poprzedniego kontekstu" - pomaga
-        modelowi zrozumieć styl, język i słownictwo.
+        Whisper uses initial_prompt as "previous context" - helps
+        the model understand style, language and vocabulary.
         """
         parts = []
         
-        # Wykryj czy to polski rap/hip-hop
+        # Detect if this is Polish rap/hip-hop
         genre_str = " ".join(genres or []).lower()
         is_rap = any(g in genre_str for g in ['rap', 'hip-hop', 'hip hop', 'trap'])
         is_polish = any(g in genre_str for g in ['polish', 'polski', 'pl'])
         
         if is_polish or is_rap:
-            # Polski rap - specjalne słownictwo
+            # Polish rap - special vocabulary
             parts.append("Polski rap hip-hop. Tekst po polsku.")
             parts.append("Slang uliczny: hajs, ziom, elo, spoko, git, nara, mordo, beka, ogar.")
             parts.append("Flow z rymami, szybkie wersy.")
@@ -1603,7 +1593,7 @@ class VocalProcessor:
         if genres:
             parts.append(f"Gatunek: {', '.join(genres[:3])}.")
         
-        # Ogólne wskazówki
+        # General hints
         if not parts:
             parts.append("Tekst piosenki muzycznej. Lyrics z rymami i powtórzeniami.")
         
@@ -1611,20 +1601,20 @@ class VocalProcessor:
     
     def analyze_sentiment(self, text: str) -> Dict[str, Any]:
         """
-        Analizuje sentiment tekstu lyrics.
+        Analyzes sentiment of lyrics text.
         
         Returns:
             {
                 'label': str,  # positive/negative/neutral
                 'score': float,  # 0-1
-                'emotions': {emotion: score},  # jeśli dostępne
+                'emotions': {emotion: score},  # if available
             }
         """
         if not text or len(text.strip()) < 10:
             return {'label': 'neutral', 'score': 0.5, 'emotions': {}}
         
         if self.sentiment_analyzer is None:
-            # Fallback: prosty keyword-based
+            # Fallback: simple keyword-based
             return self._simple_sentiment(text)
         
         try:
@@ -1640,7 +1630,7 @@ class VocalProcessor:
             return self._simple_sentiment(text)
     
     def _simple_sentiment(self, text: str) -> Dict[str, Any]:
-        """Prosty fallback dla sentiment analysis"""
+        """Simple fallback for sentiment analysis"""
         text_lower = text.lower()
         
         positive_words = ['love', 'happy', 'joy', 'beautiful', 'amazing', 'wonderful', 
@@ -1660,13 +1650,13 @@ class VocalProcessor:
     
     def analyze_lyrics_content(self, text: str) -> Dict[str, Any]:
         """
-        Głębsza analiza treści lyrics.
+        Deeper analysis of lyrics content.
         
         Returns:
             {
-                'themes': [str],  # Wykryte tematy
-                'mood_keywords': [str],  # Słowa kluczowe nastroju
-                'is_repetitive': bool,  # Czy tekst jest powtarzalny
+                'themes': [str],  # Detected themes
+                'mood_keywords': [str],  # Mood keywords
+                'is_repetitive': bool,  # Whether text is repetitive
                 'word_count': int,
             }
         """
@@ -1727,8 +1717,8 @@ class CLAPProcessor:
     """
     🎵 CLAP (Contrastive Language-Audio Pretraining) Processor
     
-    Generuje embeddingi audio-text dla lepszego conditioningu.
-    CLAP łączy audio i tekst w wspólnej przestrzeni embeddingów.
+    Generates audio-text embeddings for better conditioning.
+    CLAP connects audio and text in shared embedding space.
     """
     
     def __init__(self, device: str = "cpu"):
@@ -1738,7 +1728,7 @@ class CLAPProcessor:
         self._loaded = False
     
     def _load_model(self):
-        """Lazy loading modelu CLAP"""
+        """Lazy loading of CLAP model"""
         if self._loaded:
             return
         
@@ -1761,14 +1751,14 @@ class CLAPProcessor:
     
     def get_audio_embedding(self, audio: np.ndarray, sr: int) -> Optional[List[float]]:
         """
-        Generuje CLAP embedding dla audio.
+        Generates CLAP embedding for audio.
         
         Args:
             audio: Audio signal (numpy array)
             sr: Sample rate
             
         Returns:
-            512-dim embedding lub None jeśli błąd
+            512-dim embedding or None if error
         """
         self._load_model()
         if not self._loaded:
@@ -1777,15 +1767,15 @@ class CLAPProcessor:
         try:
             import torch
             
-            # CLAP wymaga 48kHz
+            # CLAP requires 48kHz
             if sr != 48000:
                 import librosa
                 audio = librosa.resample(audio, orig_sr=sr, target_sr=48000)
             
-            # Ogranicz długość (CLAP ma limit)
-            max_samples = 48000 * 10  # 10 sekund
+            # Limit length (CLAP has limit)
+            max_samples = 48000 * 10  # 10 seconds
             if len(audio) > max_samples:
-                # Weź środkową część
+                # Take middle part
                 start = (len(audio) - max_samples) // 2
                 audio = audio[start:start + max_samples]
             
@@ -1808,13 +1798,13 @@ class CLAPProcessor:
     
     def get_text_embedding(self, text: str) -> Optional[List[float]]:
         """
-        Generuje CLAP embedding dla tekstu (promptu).
+        Generates CLAP embedding for text (prompt).
         
         Args:
-            text: Tekst/prompt
+            text: Text/prompt
             
         Returns:
-            512-dim embedding lub None jeśli błąd
+            512-dim embedding or None if error
         """
         self._load_model()
         if not self._loaded:
@@ -1842,7 +1832,7 @@ class CLAPProcessor:
 
 
 class MoodCategory(Enum):
-    """Kategorie nastrojów muzycznych"""
+    """Music mood categories"""
     ENERGETIC = "energetic"
     CALM = "calm"
     HAPPY = "happy"
@@ -1855,7 +1845,7 @@ class MoodCategory(Enum):
 
 @dataclass
 class AudioFeatures:
-    """Cechy audio ekstrahowane z pliku - PEŁNA WERSJA jak w v1"""
+    """Audio features extracted from file - FULL VERSION as in v1"""
     # Energy
     energy: float = 0.0
     energy_std: float = 0.0
@@ -1870,9 +1860,9 @@ class AudioFeatures:
     zcr: float = 0.0  # Zero crossing rate
     tempo: float = 120.0
     
-    # 🥁 Beat grid - pozycje uderzeń (sekundy)
+    # 🥁 Beat grid - beat positions (seconds)
     beat_positions: List[float] = field(default_factory=list)
-    downbeat_positions: List[float] = field(default_factory=list)  # Mocne uderzenia (1 w takcie)
+    downbeat_positions: List[float] = field(default_factory=list)  # Strong beats (1 in bar)
     time_signature: str = "4/4"  # Metrum
     
     # 🎸 Chord progression
@@ -1887,7 +1877,7 @@ class AudioFeatures:
     mfcc_1_mean: float = 0.0
     mfcc_2_mean: float = 0.0
     mfcc_3_mean: float = 0.0
-    mfcc_means: List[float] = field(default_factory=list)  # Pełne 13 MFCC
+    mfcc_means: List[float] = field(default_factory=list)  # Full 13 MFCCs
     
     # Chroma
     chroma_means: List[float] = field(default_factory=list)
@@ -1895,7 +1885,7 @@ class AudioFeatures:
     # Duration
     duration: float = 0.0
     
-    # Kategoryzowane (dla promptów)
+    # Categorized (for prompts)
     energy_category: str = "moderate"  # very quiet/quiet/moderate/loud/very loud
     brightness_category: str = "balanced"  # dark/warm/balanced/bright/very bright
 
@@ -1978,22 +1968,22 @@ class VocalData:
     vocal_confidence: float = 0.0
     
     # ============================================
-    # EMBEDDING 1: Do style transfer ("w stylu X")
+    # EMBEDDING 1: For style transfer ("in style of X")
     # ============================================
-    # Z całego miksu - wystarczający do uchwycenia ogólnego stylu
+    # From full mix - sufficient to capture overall style
     voice_embedding: Optional[List[float]] = None  # 256-dim Resemblyzer
     
     # ============================================
-    # EMBEDDING 2: Do voice cloning ("jak X")
+    # EMBEDDING 2: For voice cloning ("like X")
     # ============================================
-    # Z separowanych wokali (Demucs) - dokładniejszy dla klonowania głosu
-    voice_embedding_separated: Optional[List[float]] = None  # 192-dim SpeechBrain lub 256-dim Resemblyzer
+    # From separated vocals (Demucs) - more accurate for voice cloning
+    voice_embedding_separated: Optional[List[float]] = None  # 192-dim SpeechBrain or 256-dim Resemblyzer
     separation_method: str = ""  # 'demucs', 'spleeter', 'none'
     
-    # Ścieżka do zapisanych separowanych wokali
-    vocals_path: Optional[str] = None  # np. "data_v2/vocals/artist_name/track_id.wav"
+    # Path to saved separated vocals
+    vocals_path: Optional[str] = None  # e.g., "data_v2/vocals/artist_name/track_id.wav"
     
-    # Metadane embeddingów
+    # Embedding metadata
     embedding_backend: str = ""  # 'resemblyzer', 'speechbrain'
     embedding_dim: int = 0  # 256 lub 192
     
@@ -2008,7 +1998,7 @@ class VocalData:
     lyrics_segments: List[Dict] = field(default_factory=list)  # [{start, end, text}]
     
     # 🔤 G2P: Phoneme representation (IPA)
-    phonemes_ipa: str = ""  # Pełny ciąg fonemów IPA
+    phonemes_ipa: str = ""  # Full IPA phoneme string
     phonemes_words: List[Dict] = field(default_factory=list)  # [{'word': str, 'phonemes': List[str]}]
     phoneme_backend: Optional[str] = None  # 'gruut' lub 'espeak'
     
@@ -2025,7 +2015,7 @@ class VocalData:
 
 @dataclass
 class TrackData:
-    """Pełne dane utworu"""
+    """Full track data"""
     track_id: str
     file_path: str
     duration: float
@@ -2040,13 +2030,13 @@ class TrackData:
     artist: Optional[str] = None
     genres: List[str] = field(default_factory=list)
     
-    # Content info (na poziomie tracka dla łatwego dostępu)
-    language: Optional[str] = None  # Język tekstu (z CSV lub Whisper)
+    # Content info (at track level for easy access)
+    language: Optional[str] = None  # Text language (from CSV or Whisper)
     explicit: bool = False  # Czy zawiera wulgaryzmy
     
     # Metadata tracking
     metadata_source: str = "none"  # csv, id3, filename, folder
-    missing_fields: List[str] = field(default_factory=list)  # Pola do uzupełnienia
+    missing_fields: List[str] = field(default_factory=list)  # Fields to fill in
     
     # Generated prompts
     global_prompt: str = ""
@@ -2079,7 +2069,7 @@ class CheckpointManager:
         │   ├── abc123.json
         │   ├── def456.json
         │   └── ...
-        └── failed/                # Pliki które się nie powiodły
+        └── failed/                # Files that failed processing
             ├── xyz789.json
             └── ...
     """
@@ -2098,11 +2088,11 @@ class CheckpointManager:
         """
         self.checkpoint_dir = Path(checkpoint_dir)
         
-        # Generuj run_id z opcjonalną nazwą
+        # Generate run_id with optional name
         if run_id:
             self.run_id = run_id
         elif run_name:
-            # Sanitize name + timestamp dla unikalności
+            # Sanitize name + timestamp for uniqueness
             safe_name = "".join(c if c.isalnum() or c in '-_' else '_' for c in run_name)
             self.run_id = f"{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         else:
@@ -2110,14 +2100,14 @@ class CheckpointManager:
         
         self.run_name = run_name
         
-        # Ścieżki
+        # Paths
         self.run_dir = self.checkpoint_dir / self.run_id
         self.tracks_dir = self.run_dir / "tracks"
         self.failed_dir = self.run_dir / "failed"
         self.progress_file = self.run_dir / "progress.json"
         
         # Stan
-        self.processed_files: set = set()  # Ścieżki już przetworzonych plików
+        self.processed_files: set = set()  # Paths of already processed files
         self.failed_files: Dict[str, str] = {}  # {path: error_message}
         self.stats = {
             'started_at': None,
@@ -2128,18 +2118,18 @@ class CheckpointManager:
             'skipped': 0,
         }
         
-        # Thread lock dla bezpiecznych zapisów
+        # Thread lock for safe writes
         self._lock = threading.Lock()
         
         # Inicjalizuj lub wczytaj stan
         self._init_or_load()
     
     def _init_or_load(self):
-        """Inicjalizuje nowy run lub wczytuje istniejący stan."""
+        """Initializes a new run or loads existing state."""
         if self.progress_file.exists():
             self._load_progress()
-            print(f"📂 Wczytano checkpoint: {self.run_id}")
-            print(f"   Przetworzonych: {len(self.processed_files)}, Nieudanych: {len(self.failed_files)}")
+            print(f"📂 Loaded checkpoint: {self.run_id}")
+            print(f"   Processed: {len(self.processed_files)}, Failed: {len(self.failed_files)}")
         else:
             # Nowy run
             self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -2147,7 +2137,7 @@ class CheckpointManager:
             self.failed_dir.mkdir(exist_ok=True)
             self.stats['started_at'] = datetime.now().isoformat()
             self._save_progress()
-            print(f"🆕 Nowy run checkpointów: {self.run_id}")
+            print(f"🆕 New checkpoint run: {self.run_id}")
     
     def _load_progress(self):
         """Wczytuje stan z pliku progress."""
@@ -2159,12 +2149,12 @@ class CheckpointManager:
             self.failed_files = data.get('failed_files', {})
             self.stats = data.get('stats', self.stats)
             
-            # Upewnij się, że katalogi istnieją
+            # Ensure directories exist
             self.tracks_dir.mkdir(parents=True, exist_ok=True)
             self.failed_dir.mkdir(parents=True, exist_ok=True)
             
         except Exception as e:
-            print(f"⚠️ Błąd wczytywania progress: {e}")
+            print(f"⚠️ Error loading progress: {e}")
             # Reset do pustego stanu
             self.processed_files = set()
             self.failed_files = {}
@@ -2191,7 +2181,7 @@ class CheckpointManager:
             temp_file.rename(self.progress_file)
     
     def is_processed(self, file_path: str) -> bool:
-        """Sprawdza czy plik był już przetworzony."""
+        """Checks if file was already processed."""
         return str(file_path) in self.processed_files
     
     def save_track(self, track_dict: Dict[str, Any], file_path: str) -> bool:
@@ -2220,24 +2210,24 @@ class CheckpointManager:
                 self.processed_files.add(str(file_path))
                 self.stats['processed'] += 1
             
-            # Zapisz progress co 10 tracków
+            # Save progress every 10 tracks
             if self.stats['processed'] % 10 == 0:
                 self._save_progress()
             
             return True
             
         except Exception as e:
-            print(f"⚠️ Błąd zapisu track {file_path}: {e}")
+            print(f"⚠️ Error saving track {file_path}: {e}")
             self.mark_failed(file_path, str(e))
             return False
     
     def mark_failed(self, file_path: str, error: str):
-        """Oznacza plik jako nieudany."""
+        """Marks file as failed."""
         with self._lock:
             self.failed_files[str(file_path)] = error
             self.stats['failed'] += 1
         
-        # Zapisz info o błędzie
+        # Save error info
         try:
             error_file = self.failed_dir / f"{Path(file_path).stem}.json"
             with open(error_file, 'w', encoding='utf-8') as f:
@@ -2360,7 +2350,7 @@ class CheckpointManager:
         return stats
     
     def _calculate_stats(self, tracks: List[Dict]) -> Dict[str, Any]:
-        """Oblicza statystyki dla listy tracków."""
+        """Calculates statistics for track list."""
         if not tracks:
             return {'total_tracks': 0}
         
@@ -2406,7 +2396,7 @@ class CheckpointManager:
     
     @classmethod
     def list_runs(cls, checkpoint_dir: str) -> List[Dict[str, Any]]:
-        """Lista wszystkich runów w katalogu checkpointów."""
+        """Lists all runs in checkpoint directory."""
         checkpoint_dir = Path(checkpoint_dir)
         runs = []
         
@@ -2422,7 +2412,7 @@ class CheckpointManager:
                             data = json.load(f)
                         runs.append({
                             'run_id': run_dir.name,
-                            'run_name': data.get('run_name'),  # Czytelna nazwa
+                            'run_name': data.get('run_name'),  # Readable name
                             'processed': len(data.get('processed_files', [])),
                             'failed': len(data.get('failed_files', {})),
                             'started_at': data.get('stats', {}).get('started_at'),
@@ -2457,12 +2447,12 @@ class CheckpointManager:
             Statystyki
         """
         if not run_ids:
-            raise ValueError("Podaj co najmniej jeden run_id!")
+            raise ValueError("Provide at least one run_id!")
         
-        # Użyj pierwszego runu jako bazowego
+        # Use first run as base
         manager = cls(checkpoint_dir, run_id=run_ids[0])
         
-        # Merguj pozostałe
+        # Merge remaining
         additional = run_ids[1:] if len(run_ids) > 1 else None
         
         return manager.merge_to_final(output_path, additional_runs=additional)
@@ -2484,29 +2474,29 @@ class DatasetBuilderV2:
         sample_rate: int = 22050,
         tracks_csv: Optional[str] = None,
         genres_csv: Optional[str] = None,
-        metadata_mapping_file: Optional[str] = None,  # JSON/CSV z ręcznym mapowaniem metadanych
-        require_metadata_check: bool = False,  # Wymaga walidacji metadanych przed budowaniem
+        metadata_mapping_file: Optional[str] = None,  # JSON/CSV with manual metadata mapping
+        require_metadata_check: bool = False,  # Requires metadata validation before building
         min_segment_duration: float = 4.0,
-        # Vocal processing - ZAWSZE WŁĄCZONE
-        extract_vocals: bool = True,  # Zawsze ekstrahuj voice embeddings
-        extract_lyrics: bool = True,  # Zawsze ekstrahuj lyrics (Whisper)
-        use_demucs: bool = True,  # WŁĄCZONE: separacja wokali - WAŻNE dla voice cloning!
+        # Vocal processing - ALWAYS ENABLED
+        extract_vocals: bool = True,  # Always extract voice embeddings
+        extract_lyrics: bool = True,  # Always extract lyrics (Whisper)
+        use_demucs: bool = True,  # ENABLED: vocal separation - IMPORTANT for voice cloning!
         save_separated_vocals: bool = True,  # Zapisuj czyste wokale per artysta
         vocals_output_dir: Optional[str] = None,  # Katalog na wokale (default: data_v2/vocals/)
         whisper_model: str = "large-v3",  # Najlepszy model dla polskiego!
         device: str = "cpu",
         # F0/Pitch extraction
         pitch_method: str = "crepe",  # crepe (accurate, default) or pyin (fast fallback)
-        # LLM prompt enhancement - ZAWSZE WŁĄCZONE
-        use_llm_prompts: bool = True,  # Zawsze wzbogacaj prompty przez LLM
+        # LLM prompt enhancement - ALWAYS ENABLED
+        use_llm_prompts: bool = True,  # Always enhance prompts via LLM
         llm_model: str = "gpt-4o-mini",
         llm_cache_file: Optional[str] = None,
         # 💾 CHECKPOINT OPTIONS
-        checkpoint_dir: Optional[str] = None,  # Katalog na checkpointy (włącza checkpointing)
-        resume_run_id: Optional[str] = None,  # ID runu do wznowienia (lub nowy jeśli None)
+        checkpoint_dir: Optional[str] = None,  # Directory for checkpoints (enables checkpointing)
+        resume_run_id: Optional[str] = None,  # Run ID to resume (or new if None)
         run_name: Optional[str] = None,  # Czytelna nazwa runu (np. "server1_hiphop")
         # 🚀 BATCH GPU PROCESSING
-        batch_size: int = 1,  # Batch size dla GPU (więcej = szybciej, ale więcej VRAM)
+        batch_size: int = 1,  # Batch size for GPU (more = faster, but more VRAM)
     ):
         self.audio_dir = Path(audio_dir)
         self.sample_rate = sample_rate
@@ -2524,22 +2514,26 @@ class DatasetBuilderV2:
                 run_name=run_name,
             )
         
-        # Vocal processing - ZAWSZE WŁĄCZONE
+        # Vocal processing - ALWAYS ENABLED
         self.extract_vocals = extract_vocals
         self.extract_lyrics = extract_lyrics
         self.save_separated_vocals = save_separated_vocals
         self.vocals_output_dir = Path(vocals_output_dir) if vocals_output_dir else Path("./data_v2/vocals")
         
-        # Utwórz katalog na wokale
+        # Create directory for vocals
         if self.save_separated_vocals:
             self.vocals_output_dir.mkdir(parents=True, exist_ok=True)
         
-        # LLM prompt enhancement - ZAWSZE WŁĄCZONE (używa stałego klucza API)
+        # LLM prompt enhancement - requires OPENAI_API_KEY environment variable
         self.use_llm_prompts = use_llm_prompts
         self.llm_enhancer = None
         if use_llm_prompts:
-            self.llm_enhancer = LLMPromptEnhancer(
-                api_key=OPENAI_API_KEY,
+            if not OPENAI_API_KEY:
+                print("WARNING: OPENAI_API_KEY not set. LLM prompt enhancement disabled.")
+                self.use_llm_prompts = False
+            else:
+                self.llm_enhancer = LLMPromptEnhancer(
+                    api_key=OPENAI_API_KEY,
                 model=llm_model,
                 cache_file=llm_cache_file or "./data_v2/.prompt_cache.json",
             )
@@ -2550,7 +2544,7 @@ class DatasetBuilderV2:
             min_segment_duration=min_segment_duration,
         )
         
-        # Vocal processor - ZAWSZE Z DEMUCS dla separacji wokali
+        # Vocal processor - ALWAYS WITH DEMUCS for vocal separation
         self.vocal_processor = VocalProcessor(
             sample_rate=sample_rate,
             use_demucs=use_demucs,
@@ -2580,9 +2574,9 @@ class DatasetBuilderV2:
         self.genres_df = None
         self.genre_map = {}
         
-        # 📋 Ręczne mapowanie metadanych (dla plików bez ID3 tagów)
+        # 📋 Manual metadata mapping (for files without ID3 tags)
         # Format JSON: {"filename.mp3": {"artist": "...", "genre": "..."}}
-        # Format CSV: filename,artist,genre (language opcjonalny - wykrywany przez Whisper!)
+        # Format CSV: filename,artist,genre (language optional - detected by Whisper!)
         self.metadata_mapping: Dict[str, Dict[str, Any]] = {}
         if metadata_mapping_file:
             self._load_metadata_mapping(metadata_mapping_file)
@@ -2645,7 +2639,7 @@ class DatasetBuilderV2:
     
     def _load_metadata_mapping(self, mapping_file: str):
         """
-        Ładuje ręczne mapowanie metadanych z pliku JSON lub CSV.
+        Loads manual metadata mapping from JSON or CSV file.
         
         Format JSON:
         {
@@ -2659,12 +2653,12 @@ class DatasetBuilderV2:
         filename,artist,genre
         song.mp3,Zeus,Hip-Hop
         
-        UWAGA: Kolumna 'language' jest opcjonalna - język jest automatycznie
-        wykrywany przez Whisper podczas transkrypcji lyrics!
+        NOTE: The 'language' column is optional - language is automatically
+        detected by Whisper during lyrics transcription!
         """
         mapping_path = Path(mapping_file)
         if not mapping_path.exists():
-            print(f"⚠️  Plik mapowania nie istnieje: {mapping_file}")
+            print(f"⚠️  Mapping file does not exist: {mapping_file}")
             return
         
         try:
@@ -2672,17 +2666,17 @@ class DatasetBuilderV2:
                 with open(mapping_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 
-                # Obsługa różnych formatów JSON
+                # Handle different JSON formats
                 tracks = data.get('tracks', [])
                 if not tracks and isinstance(data, list):
                     tracks = data
                 elif not tracks and isinstance(data, dict) and 'filename' not in data:
-                    # Format: {"filename.mp3": {...}} lub {"path/to/file.mp3": {...}}
+                    # Format: {"filename.mp3": {...}} or {"path/to/file.mp3": {...}}
                     for filepath, meta in data.items():
                         if isinstance(meta, dict):
-                            # Zapisz zarówno pełną ścieżkę jak i nazwę pliku
+                            # Save both full path and filename
                             self.metadata_mapping[filepath] = meta
-                    print(f"📋 Załadowano mapowanie dla {len(self.metadata_mapping)} plików z JSON")
+                    print(f"📋 Loaded mapping for {len(self.metadata_mapping)} files from JSON")
                     return
                 
                 for entry in tracks:
@@ -2694,7 +2688,7 @@ class DatasetBuilderV2:
                             'genres': entry.get('genres', [entry.get('genre')] if entry.get('genre') else []),
                             'language': entry.get('language'),
                         }
-                        # Zapisz z oryginalną ścieżką (może być pełna lub tylko nazwa)
+                        # Save with original path (can be full or just filename)
                         self.metadata_mapping[filepath] = meta
                         
             elif mapping_path.suffix.lower() == '.csv':
@@ -2711,36 +2705,36 @@ class DatasetBuilderV2:
                                 'genres': [genre] if genre else [],
                                 'language': row.get('language'),
                             }
-                            # Zapisz z oryginalną ścieżką (może być pełna lub tylko nazwa)
+                            # Save with original path (can be full or just filename)
                             self.metadata_mapping[filepath] = meta
             
-            print(f"📋 Załadowano mapowanie metadanych dla {len(self.metadata_mapping)} plików")
+            print(f"📋 Loaded metadata mapping for {len(self.metadata_mapping)} files")
             
         except Exception as e:
-            print(f"❌ Błąd ładowania mapowania metadanych: {e}")
+            print(f"❌ Error loading metadata mapping: {e}")
     
     def _generate_track_id(self, file_path: str) -> str:
-        """Generuje unikalny ID dla utworu"""
+        """Generates unique ID for track"""
         return hashlib.md5(file_path.encode()).hexdigest()[:12]
     
     def _get_track_id_from_path(self, file_path: Path) -> Optional[int]:
         """
-        Wyciąga track_id z nazwy pliku FMA.
+        Extracts track_id from FMA filename.
         
-        Wymaga pełnej struktury FMA:
+        Requires full FMA structure:
         - fma_small/000/000002.mp3 → 2
         - fma_full/012/012345.mp3 → 12345
         
-        NIE rozpoznaje jako FMA:
-        - moje_mp3/000002.mp3 (brak folderu fma_*)
-        - fma_small/000002.mp3 (brak folderu xxx)
-        - random/123.mp3 (nie FMA)
+        NOT recognized as FMA:
+        - my_mp3s/000002.mp3 (no fma_* folder)
+        - fma_small/000002.mp3 (no xxx folder)
+        - random/123.mp3 (not FMA)
         """
         try:
-            # Sprawdź strukturę: .../fma_small|fma_full/XXX/XXXXXX.mp3
+            # Check structure: .../fma_small|fma_full/XXX/XXXXXX.mp3
             parts = file_path.parts
             
-            # Szukamy "fma_small" lub "fma_full" w ścieżce
+            # Look for "fma_small" or "fma_full" in path
             fma_idx = None
             for i, part in enumerate(parts):
                 if part in ('fma_small', 'fma_full'):
@@ -2748,20 +2742,20 @@ class DatasetBuilderV2:
                     break
             
             if fma_idx is None:
-                return None  # Nie jest w folderze FMA
+                return None  # Not in FMA folder
             
-            # Sprawdź czy jest folder XXX (3 cyfry) po fma_*
+            # Check if XXX folder (3 digits) exists after fma_*
             if len(parts) <= fma_idx + 2:
-                return None  # Brak wymaganej struktury
+                return None  # Missing required structure
             
             folder_xxx = parts[fma_idx + 1]
             if not (len(folder_xxx) == 3 and folder_xxx.isdigit()):
-                return None  # Folder nie jest w formacie XXX
+                return None  # Folder is not in XXX format
             
-            # Sprawdź nazwę pliku - musi być 6 cyfr
+            # Check filename - must be 6 digits
             stem = file_path.stem
             if not (len(stem) == 6 and stem.isdigit()):
-                return None  # Nazwa pliku nie jest w formacie XXXXXX
+                return None  # Filename is not in XXXXXX format
             
             return int(stem)
             
@@ -2857,9 +2851,9 @@ class DatasetBuilderV2:
         Format embeddings.json:
         {
             "artist": "Artist Name",
-            "style_embedding": [...],              # Uśrednione 256-dim
+            "style_embedding": [...],              # Averaged 256-dim
             "voice_embedding": [...],              # Alias = style_embedding
-            "voice_embedding_separated": [...],    # Uśrednione 192-dim
+            "voice_embedding_separated": [...],    # Averaged 192-dim
             "track_count": 5,
             "tracks_with_separated": 4,
             "avg_vocal_confidence": 0.85,
@@ -2876,7 +2870,7 @@ class DatasetBuilderV2:
         }
         """
         if voice_embedding is None and voice_embedding_separated is None:
-            return  # Nic do zapisania
+            return  # Nothing to save
         
         try:
             # Sanitize artist name
@@ -2886,12 +2880,12 @@ class DatasetBuilderV2:
             if not artist_name_clean:
                 artist_name_clean = 'unknown'
             
-            # Ścieżka do embeddings.json
+            # Path to embeddings.json
             artist_dir = self.vocals_output_dir / artist_name_clean
             artist_dir.mkdir(parents=True, exist_ok=True)
             embeddings_path = artist_dir / "embeddings.json"
             
-            # Wczytaj istniejące dane lub utwórz nowe
+            # Load existing data or create new
             if embeddings_path.exists():
                 with open(embeddings_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -2913,9 +2907,9 @@ class DatasetBuilderV2:
                     }
                 }
             
-            # Sprawdź czy track już istnieje
+            # Check if track already exists
             if track_id in data.get("tracks", {}):
-                return  # Już przetworzony
+                return  # Already processed
             
             # Dodaj nowy track
             raw = data.get("_raw_embeddings", {"style": [], "separated": [], "confidences": []})
@@ -2940,9 +2934,9 @@ class DatasetBuilderV2:
                 existing_genres.add(g)
             data["genres"] = sorted(list(existing_genres))
             
-            # Oblicz uśrednione embeddingi
+            # Calculate averaged embeddings
             if raw["style"]:
-                # Ważona średnia po confidence
+                # Weighted average by confidence
                 weights = np.array(raw["confidences"][:len(raw["style"])])
                 if weights.sum() > 0:
                     weights = weights / weights.sum()
@@ -2973,7 +2967,7 @@ class DatasetBuilderV2:
             print(f"   ⚠️ Failed to update artist embeddings: {e}")
     
     def _extract_audio_features(self, y: np.ndarray, sr: int) -> AudioFeatures:
-        """Ekstrahuje PEŁNE cechy audio z sygnału (jak w v1)"""
+        """Extracts FULL audio features from signal (as in v1)"""
         features = AudioFeatures()
         
         try:
@@ -3015,7 +3009,7 @@ class DatasetBuilderV2:
                 except Exception:
                     features.tempo = 120.0  # Default fallback
             
-            # Chroma (key detection) - z fallback dla kompatybilności
+            # Chroma (key detection) - with fallback for compatibility
             try:
                 chroma = librosa.feature.chroma_cens(y=y, sr=sr)
             except Exception:
@@ -3029,7 +3023,7 @@ class DatasetBuilderV2:
             features.dominant_key = notes[dominant_idx]
             features.key_strength = float(chroma_means[dominant_idx])
             
-            # MFCC (pełne 13 + indywidualne 1-3)
+            # MFCC (full 13 + individual 1-3)
             mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
             mfcc_means = np.mean(mfcc, axis=1)
             features.mfcc_means = mfcc_means.tolist()
@@ -3042,15 +3036,15 @@ class DatasetBuilderV2:
             features.spectral_contrast_mean = float(np.mean(contrast))
             
             # ============================================
-            # 🥁 Beat Grid - pozycje uderzeń
+            # 🥁 Beat Grid - beat positions
             # ============================================
             try:
                 tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
                 beat_times = librosa.frames_to_time(beat_frames, sr=sr)
                 features.beat_positions = beat_times.tolist()
                 
-                # Downbeats (mocne uderzenia - co 4 w 4/4)
-                # Zakładamy 4/4 jako domyślne metrum
+                # Downbeats (strong beats - every 4th in 4/4)
+                # Assuming 4/4 as default time signature
                 features.time_signature = "4/4"
                 if len(beat_times) >= 4:
                     features.downbeat_positions = beat_times[::4].tolist()
@@ -3065,12 +3059,12 @@ class DatasetBuilderV2:
             # 🎸 Chord Detection
             # ============================================
             try:
-                # Używamy chroma do detekcji akordów
-                # Prosty detektor: mapuj chroma na akordy durowe/molowe
+                # Using chroma for chord detection
+                # Simple detector: map chroma to major/minor chords
                 hop_length = 512
                 chroma_for_chords = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop_length)
                 
-                # Szablony akordów (durowe i molowe)
+                # Chord templates (major and minor)
                 chord_templates = {
                     'C': [1,0,0,0,1,0,0,1,0,0,0,0],
                     'Cm': [1,0,0,1,0,0,0,1,0,0,0,0],
@@ -3098,7 +3092,7 @@ class DatasetBuilderV2:
                     'Bm': [0,0,1,0,0,0,1,0,0,0,0,1],
                 }
                 
-                # Detekcja akordów co ~0.5 sekundy
+                # Chord detection every ~0.5 seconds
                 frames_per_chord = int(0.5 * sr / hop_length)
                 chords_detected = []
                 
@@ -3108,7 +3102,7 @@ class DatasetBuilderV2:
                         continue
                     avg_chroma = np.mean(chunk, axis=1)
                     
-                    # Znajdź najbliższy akord
+                    # Find closest chord
                     best_chord = 'N'  # No chord
                     best_score = 0
                     for chord_name, template in chord_templates.items():
@@ -3123,14 +3117,14 @@ class DatasetBuilderV2:
                 
                 features.chords = chords_detected
                 
-                # Unikalna sekwencja akordów (bez powtórzeń z rzędu)
+                # Unique chord sequence (without consecutive repetitions)
                 chord_sequence = []
                 prev_chord = None
                 for c in chords_detected:
                     if c['chord'] != prev_chord:
                         chord_sequence.append(c['chord'])
                         prev_chord = c['chord']
-                features.chord_sequence = chord_sequence[:20]  # Max 20 akordów
+                features.chord_sequence = chord_sequence[:20]  # Max 20 chords
                 
             except Exception as e:
                 print(f"  ⚠️ Chord detection error: {e}")
@@ -3138,7 +3132,7 @@ class DatasetBuilderV2:
                 features.chord_sequence = []
             
             # ============================================
-            # Kategoryzacja (dla promptów)
+            # Categorization (for prompts)
             # ============================================
             
             # Tempo category
@@ -3189,7 +3183,7 @@ class DatasetBuilderV2:
         start_time: float,
         end_time: float,
     ) -> Dict[str, Any]:
-        """Ekstrahuje cechy dla konkretnego segmentu"""
+        """Extracts features for a specific segment"""
         start_sample = int(start_time * sr)
         end_sample = int(end_time * sr)
         
@@ -3209,7 +3203,7 @@ class DatasetBuilderV2:
             cent = librosa.feature.spectral_centroid(y=segment_y, sr=sr)[0]
             features['spectral_centroid'] = float(np.mean(cent))
             
-            # Tempo (może być różne per segment)
+            # Tempo (can be different per segment)
             tempo, _ = librosa.beat.beat_track(y=segment_y, sr=sr)
             features['tempo'] = float(tempo) if isinstance(tempo, (int, float)) else float(tempo[0])
             
@@ -3292,14 +3286,14 @@ class DatasetBuilderV2:
         hop_length: int = 256,
     ) -> Optional[Dict[str, float]]:
         """
-        Analizuje vibrato w konturze F0.
+        Analyzes vibrato in F0 contour.
         
-        Vibrato to periodyczna modulacja pitchu, typowo:
+        Vibrato is periodic pitch modulation, typically:
         - Rate: 4-8 Hz
         - Depth: 20-100 cents
         
         Returns:
-            Dict z vibrato_rate, vibrato_depth, vibrato_extent
+            Dict with vibrato_rate, vibrato_depth, vibrato_extent
         """
         # Need enough voiced frames
         if np.sum(voiced_mask) < 20:
@@ -3390,15 +3384,15 @@ class DatasetBuilderV2:
         max_breath_duration: float = 0.8,
     ) -> List[float]:
         """
-        Wykrywa pozycje oddechów w audio.
+        Detects breath positions in audio.
         
-        Oddechy charakteryzują się:
-        - Nagły spadek energii (pauza)
-        - Szum o wysokiej częstotliwości (inhalacja)
-        - Krótki czas trwania (0.1-0.8s)
+        Breaths are characterized by:
+        - Sudden energy drop (pause)
+        - High-frequency noise (inhalation)
+        - Short duration (0.1-0.8s)
         
         Returns:
-            Lista czasów oddechów w sekundach
+            List of breath times in seconds
         """
         # Compute RMS energy
         hop_length = 512
@@ -3445,8 +3439,8 @@ class DatasetBuilderV2:
     
     def _extract_id3_tags(self, file_path: Path) -> Dict[str, Any]:
         """
-        Wyciąga metadane z tagów ID3 pliku MP3.
-        Fallback gdy nie ma CSV lub plik nie jest w CSV.
+        Extracts metadata from MP3 file ID3 tags.
+        Fallback when no CSV or file is not in CSV.
         """
         metadata = {
             'artist': None,
@@ -3459,7 +3453,7 @@ class DatasetBuilderV2:
             return metadata
         
         try:
-            # Spróbuj wyciągnąć tagi ID3
+            # Try to extract ID3 tags
             tags = ID3(str(file_path))
             metadata['source'] = 'id3'
             
@@ -3480,7 +3474,7 @@ class DatasetBuilderV2:
         except Exception:
             pass
         
-        # Fallback na nazwę folderu dla artysty jeśli brak ID3
+        # Fallback to folder name for artist if no ID3
         if not metadata['artist']:
             parent = file_path.parent.name
             skip_folders = ['music', 'mp3', 'audio', 'songs', 'own', 'downloads',
@@ -3493,13 +3487,13 @@ class DatasetBuilderV2:
     
     def _get_metadata(self, file_path: Path) -> Dict[str, Any]:
         """
-        Pobiera metadane dla utworu - próbuje w kolejności:
-        1. Ręczne mapowanie z pliku (metadata_mapping_file) - najpierw po ścieżce, potem po nazwie
-        2. CSV (dla FMA z numerycznym track_id)
-        3. ID3 tags (dla MP3)
-        4. Fallback na nazwę folderu dla artysty
+        Gets metadata for track - tries in order:
+        1. Manual mapping from file (metadata_mapping_file) - first by path, then by name
+        2. CSV (for FMA with numeric track_id)
+        3. ID3 tags (for MP3)
+        4. Fallback to folder name for artist
         
-        Tylko pola potrzebne do treningu: artist, genres, language
+        Only fields needed for training: artist, genres, language
         """
         metadata = {
             'artist': None,
@@ -3510,25 +3504,25 @@ class DatasetBuilderV2:
         
         filename = file_path.name
         
-        # 0. Najpierw sprawdź ręczne mapowanie (najwyższy priorytet!)
-        # Próbuj w kolejności: pełna ścieżka, ścieżka względna, tylko nazwa pliku
+        # 0. First check manual mapping (highest priority!)
+        # Try in order: full path, relative path, filename only
         mapping = None
         
-        # Próba 1: Pełna ścieżka absolutna
+        # Attempt 1: Full absolute path
         full_path = str(file_path)
         if full_path in self.metadata_mapping:
             mapping = self.metadata_mapping[full_path]
         
-        # Próba 2: Ścieżka względna do audio_dir
+        # Attempt 2: Relative path to audio_dir
         if mapping is None:
             try:
                 relative_path = str(file_path.relative_to(self.audio_dir))
                 if relative_path in self.metadata_mapping:
                     mapping = self.metadata_mapping[relative_path]
             except ValueError:
-                pass  # file_path nie jest w audio_dir
+                pass  # file_path is not in audio_dir
         
-        # Próba 3: Tylko nazwa pliku (fallback dla kompatybilności wstecznej)
+        # Attempt 3: Filename only (fallback for backwards compatibility)
         if mapping is None and filename in self.metadata_mapping:
             mapping = self.metadata_mapping[filename]
         
@@ -3544,9 +3538,9 @@ class DatasetBuilderV2:
             if mapping.get('language'):
                 metadata['language'] = mapping['language']
             
-            # NIE zwracamy tutaj! Kontynuujemy żeby uzupełnić brakujące pola z innych źródeł
+            # DON'T return here! Continue to fill missing fields from other sources
         
-        # 1. Próba pobrania z CSV (FMA) - uzupełnij brakujące pola
+        # 1. Try to get from CSV (FMA) - fill missing fields
         if self.tracks_df is not None:
             track_id = self._get_track_id_from_path(file_path)
             if track_id is not None and track_id in self.tracks_df.index:
@@ -3554,17 +3548,17 @@ class DatasetBuilderV2:
                 if metadata['source'] == 'none':
                     metadata['source'] = 'csv'
                 
-                # Artist - tylko jeśli brak z mapowania
+                # Artist - only if missing from mapping
                 if not metadata['artist']:
                     if 'artist_name' in row and pd.notna(row['artist_name']):
                         metadata['artist'] = row['artist_name']
                 
-                # Language - tylko jeśli brak
+                # Language - only if missing
                 if not metadata['language']:
                     if 'track_language_code' in row and pd.notna(row['track_language_code']):
                         metadata['language'] = row['track_language_code']
                 
-                # Genres - tylko jeśli brak z mapowania
+                # Genres - only if missing from mapping
                 if not metadata['genres']:
                     for col in ['genre_top', 'track_genres', 'track_genres_all', 'genres']:
                         if col not in row or pd.isna(row[col]):
@@ -3588,10 +3582,10 @@ class DatasetBuilderV2:
                         except:
                             pass
         
-        # 2. Fallback: ID3 tags - uzupełnij pozostałe brakujące pola
+        # 2. Fallback: ID3 tags - fill remaining missing fields
         id3_data = self._extract_id3_tags(file_path)
         
-        # Uzupełnij brakujące pola z ID3
+        # Fill missing fields from ID3
         if not metadata['artist'] and id3_data.get('artist'):
             metadata['artist'] = id3_data['artist']
         if not metadata['genres'] and id3_data.get('genres'):
@@ -3599,11 +3593,11 @@ class DatasetBuilderV2:
         if not metadata['language'] and id3_data.get('language'):
             metadata['language'] = id3_data['language']
         
-        # Aktualizuj source jeśli ID3 dał dane
+        # Update source if ID3 provided data
         if id3_data.get('source', 'none') != 'none' and metadata['source'] == 'none':
             metadata['source'] = id3_data['source']
         
-        # 3. Śledź brakujące pola (do późniejszego uzupełnienia)
+        # 3. Track missing fields (for later completion)
         missing_fields = []
         if not metadata['artist']:
             missing_fields.append('artist')
@@ -3616,29 +3610,29 @@ class DatasetBuilderV2:
                 metadata['source'] = 'folder'
         if not metadata['genres']:
             missing_fields.append('genres')
-        # language jest opcjonalny, nie śledzimy jako "brakujący"
+        # language is optional, we don't track as "missing"
         
         metadata['missing_fields'] = missing_fields
         
         return metadata
     
-    # Zachowaj starą nazwę dla kompatybilności
+    # Keep old name for compatibility
     def _get_metadata_from_csv(self, file_path: Path) -> Dict[str, Any]:
-        """DEPRECATED: Użyj _get_metadata() zamiast tego."""
+        """DEPRECATED: Use _get_metadata() instead."""
         return self._get_metadata(file_path)
     
     def _infer_moods(self, genres: List[str], energy: float, centroid: float) -> List[str]:
-        """Wnioskuje nastroje z gatunków i cech"""
+        """Infers moods from genres and features"""
         moods = set()
         
-        # Z gatunków
+        # From genres
         for genre in genres:
             genre_lower = genre.lower()
             for key, genre_moods in self.genre_moods.items():
                 if key in genre_lower:
                     moods.update(genre_moods[:2])
         
-        # Z energii
+        # From energy
         if energy > 0.15:
             moods.add('energetic')
             moods.add('powerful')
@@ -3646,7 +3640,7 @@ class DatasetBuilderV2:
             moods.add('calm')
             moods.add('peaceful')
         
-        # Z jasności (spectral centroid)
+        # From brightness (spectral centroid)
         if centroid > 4000:
             moods.add('bright')
         elif centroid < 2000:
@@ -3656,7 +3650,7 @@ class DatasetBuilderV2:
         return list(moods)[:4]
     
     def _get_instruments(self, genres: List[str]) -> List[str]:
-        """Zwraca typowe instrumenty dla gatunków"""
+        """Returns typical instruments for genres"""
         instruments = set()
         
         for genre in genres:
@@ -3669,17 +3663,17 @@ class DatasetBuilderV2:
     
     def _generate_global_prompt(self, track: TrackData) -> str:
         """
-        Generuje bogatszy globalny prompt dla utworu.
+        Generates richer global prompt for track.
         
-        Wykorzystuje WSZYSTKIE dostępne dane:
-        - Gatunek, artysta, język
-        - BPM, tonacja, akordy
-        - Mood z analizy lyrics
-        - Themes z lyrics
+        Uses ALL available data:
+        - Genre, artist, language
+        - BPM, key, chords
+        - Mood from lyrics analysis
+        - Themes from lyrics
         """
         parts = []
         
-        # 1. ARTIST (jeśli znany i nie generyczny)
+        # 1. ARTIST (if known and not generic)
         if track.artist and track.artist.lower() not in ['unknown', 'various', 'va', 'unknown artist']:
             parts.append(f"by {track.artist}")
         
@@ -3747,12 +3741,12 @@ class DatasetBuilderV2:
         parts.append(f"at {int(tempo)} BPM ({tempo_desc})")
         
         if key:
-            # Dodaj minor/major jeśli wykryto
+            # Add minor/major if detected
             parts.append(f"in the key of {key}")
         
         # 5. CHORD PROGRESSION (if interesting)
         if hasattr(track.features, 'chord_sequence') and track.features.chord_sequence:
-            unique_chords = list(dict.fromkeys(track.features.chord_sequence[:8]))  # Pierwsze unikalne
+            unique_chords = list(dict.fromkeys(track.features.chord_sequence[:8]))  # First unique ones
             if len(unique_chords) >= 3:
                 chord_str = " → ".join(unique_chords[:4])
                 parts.append(f"chord progression: {chord_str}")
@@ -3764,7 +3758,7 @@ class DatasetBuilderV2:
             else:
                 parts.append("with vocals")
             
-            # Language (ważne dla nie-angielskich!)
+            # Language (important for non-English!)
             lang = track.vocals.lyrics_language
             if lang and lang not in ['en', 'english']:
                 lang_names = {
@@ -3799,18 +3793,18 @@ class DatasetBuilderV2:
         track: TrackData,
     ) -> str:
         """
-        Generuje bogatszy prompt dla segmentu.
+        Generates richer prompt for segment.
         
-        Zawiera:
-        - Typ sekcji (verse, chorus, etc.)
-        - Tonację segmentu
-        - Info o wokalach
+        Contains:
+        - Section type (verse, chorus, etc.)
+        - Segment key
+        - Vocals info
         - Energy level
-        - Fragment lyrics (jeśli dostępny)
+        - Lyrics snippet (if available)
         """
         parts = []
         
-        # 1. SECTION TYPE - bardziej opisowe prefiksy
+        # 1. SECTION TYPE - more descriptive prefixes
         section_prefixes = {
             'intro': 'Atmospheric intro',
             'verse': 'Verse',
@@ -3828,7 +3822,7 @@ class DatasetBuilderV2:
         prefix = section_prefixes.get(segment.section_type, segment.section_type.replace('_', ' ').title())
         parts.append(prefix)
         
-        # 2. KEY dla tego segmentu (jeśli różna od globalnej)
+        # 2. KEY for this segment (if different from global)
         if segment.dominant_key:
             if segment.dominant_key != track.features.dominant_key:
                 parts.append(f"modulating to {segment.dominant_key}")
@@ -3843,7 +3837,7 @@ class DatasetBuilderV2:
         elif segment.energy < 0.05:
             parts.append("quiet and calm")
         
-        # 4. TEMPO (jeśli znacząco różne)
+        # 4. TEMPO (if significantly different)
         tempo_diff = abs(segment.tempo - track.features.tempo)
         if tempo_diff > 15:
             if segment.tempo > track.features.tempo:
@@ -3866,21 +3860,21 @@ class DatasetBuilderV2:
         else:
             parts.append("instrumental")
         
-        # 6. LYRICS SNIPPET (krótki fragment dla kontekstu)
+        # 6. LYRICS SNIPPET (short fragment for context)
         if segment.lyrics_text and len(segment.lyrics_text) > 10:
-            # Weź pierwsze ~50 znaków
+            # Take first ~50 characters
             snippet = segment.lyrics_text[:50].strip()
             if len(segment.lyrics_text) > 50:
-                snippet = snippet.rsplit(' ', 1)[0] + '...'  # Nie ucinaj w środku słowa
+                snippet = snippet.rsplit(' ', 1)[0] + '...'  # Don't cut in middle of word
             parts.append(f'"{snippet}"')
         
-        # 7. POSITION w utworze
+        # 7. POSITION in track
         if segment.position < 0.05:
             parts.append("opening")
         elif segment.position > 0.95:
             parts.append("finale")
         
-        # Build prompt - łącz przecinkami dla czytelności
+        # Build prompt - join with commas for readability
         prompt = ', '.join(parts)
         
         # Clean up double spaces
@@ -3894,7 +3888,7 @@ class DatasetBuilderV2:
         extract_features: bool = True,
         with_segments: bool = True,
     ) -> Optional[TrackData]:
-        """Przetwarza pojedynczy utwór"""
+        """Processes single track"""
         try:
             # Load audio
             y, sr = librosa.load(str(file_path), sr=self.sample_rate)
@@ -3915,7 +3909,7 @@ class DatasetBuilderV2:
             metadata = self._get_metadata(file_path)
             track.artist = metadata['artist']
             track.genres = metadata['genres']
-            track.language = metadata.get('language')  # Z CSV/ID3 jeśli dostępne
+            track.language = metadata.get('language')  # From CSV/ID3 if available
             track.metadata_source = metadata.get('source', 'none')
             track.missing_fields = metadata.get('missing_fields', [])
             
@@ -4025,16 +4019,16 @@ class DatasetBuilderV2:
                             text_lower = lyrics_data['text'].lower()
                             track.vocals.explicit = any(w in text_lower for w in explicit_words)
                             
-                        # Ustaw language na poziomie tracka (Whisper nadpisuje CSV jeśli wykrył)
+                        # Set language at track level (Whisper overrides CSV if detected)
                         if lyrics_data['language']:
                             track.language = lyrics_data['language']
                     
-                    # Skopiuj explicit i language na poziom tracka dla łatwego dostępu
+                    # Copy explicit and language to track level for easy access
                     track.explicit = track.vocals.explicit
                     if not track.language and track.vocals.lyrics_language:
                         track.language = track.vocals.lyrics_language
                 
-                # Zawsze ustaw explicit i language na poziomie tracka (nawet jeśli brak wokali)
+                # Always set explicit and language at track level (even if no vocals)
                 if track.explicit is None:
                     track.explicit = track.vocals.explicit
                 if track.language is None and track.vocals.lyrics_language:
@@ -4056,7 +4050,7 @@ class DatasetBuilderV2:
                             y, sr, seg.start_time, seg.end_time
                         )
                     
-                    # Handle section_type - może być enum lub string
+                    # Handle section_type - can be enum or string
                     section_type_str = seg.section_type.value if hasattr(seg.section_type, 'value') else str(seg.section_type)
                     
                     segment_data = SegmentData(
@@ -4150,11 +4144,11 @@ class DatasetBuilderV2:
             # Generate prompts (now with vocal info)
             track.global_prompt = self._generate_global_prompt(track)
             
-            # 🤖 LLM Enhancement dla global prompt
+            # 🤖 LLM Enhancement for global prompt
             if self.llm_enhancer:
-                # ZAWSZE generujemy prompty po angielsku!
-                # Text encoder (CLAP/T5) jest trenowany na EN.
-                # Lyrics pozostają w oryginalnym języku - wokal ma śpiewać w tym języku.
+                # ALWAYS generate prompts in English!
+                # Text encoder (CLAP/T5) is trained on EN.
+                # Lyrics remain in original language - vocals should sing in that language.
                 
                 features_dict = {
                     'tempo': track.features.tempo,
@@ -4167,7 +4161,7 @@ class DatasetBuilderV2:
                     features=features_dict,
                     artist=track.artist,
                     genre=track.genres[0] if track.genres else None,
-                    language='en',  # ZAWSZE angielski dla promptów!
+                    language='en',  # ALWAYS English for prompts!
                 )
             
             # 🎵 CLAP Embeddings (audio-text multimodal)
@@ -4186,7 +4180,7 @@ class DatasetBuilderV2:
             for segment in track.segments:
                 segment.prompt = self._generate_segment_prompt(segment, track)
                 
-                # 🤖 LLM Enhancement dla segment prompts (opcjonalnie, mniej ważne)
+                # 🤖 LLM Enhancement for segment prompts (optional, less important)
                 # Skip for now - global prompt is most important
             
             return track
@@ -4206,22 +4200,22 @@ class DatasetBuilderV2:
         with_segments: bool = True,
     ) -> Optional[TrackData]:
         """
-        Przetwarza utwór używając już przetworzonych danych z GPU batch.
+        Processes track using already processed GPU batch data.
         
-        gpu_data zawiera (z BatchGPUProcessor.process_batch):
-        - audio: np.ndarray (oryginalne audio, już załadowane)
-        - vocals: np.ndarray (separowane wokale z Demucs)
+        gpu_data contains (from BatchGPUProcessor.process_batch):
+        - audio: np.ndarray (original audio, already loaded)
+        - vocals: np.ndarray (separated vocals from Demucs)
         - lyrics: Dict{'text': str, 'language': str, 'segments': List}
-        - clap_audio: np.ndarray (512-dim) lub None
-        - clap_text: np.ndarray (512-dim) lub None
+        - clap_audio: np.ndarray (512-dim) or None
+        - clap_text: np.ndarray (512-dim) or None
         
-        Pomija Demucs i Whisper - używa danych z batch processora.
+        Skips Demucs and Whisper - uses data from batch processor.
         """
         try:
-            # Użyj audio z gpu_data (już załadowane w batch)
+            # Use audio from gpu_data (already loaded in batch)
             y = gpu_data.get('audio')
             if y is None:
-                # Fallback - załaduj jeśli brak w gpu_data
+                # Fallback - load if not in gpu_data
                 y, sr = librosa.load(str(file_path), sr=self.sample_rate)
             else:
                 sr = self.sample_rate
@@ -4261,7 +4255,7 @@ class DatasetBuilderV2:
             vocals = gpu_data.get('vocals')
             vocals_sr = gpu_data.get('vocals_sr', sr)
             
-            # Detect vocals używając oryginalnego audio
+            # Detect vocals using original audio
             if self.vocal_processor:
                 has_vocals, vocal_conf = self.vocal_processor.detect_vocals(y, sr)
                 track.vocals.has_vocals = has_vocals
@@ -4276,7 +4270,7 @@ class DatasetBuilderV2:
                     
                     # Embedding z separowanych wokali (z GPU batch)
                     if vocals is not None and len(vocals) > 0:
-                        # Użyj wokali z batch processora
+                        # Use vocals from batch processor
                         if hasattr(self.vocal_processor, 'voice_extractor') and self.vocal_processor.voice_extractor:
                             emb_sep = self.vocal_processor.voice_extractor.extract_embedding(vocals, vocals_sr)
                             if emb_sep is not None:
@@ -4307,7 +4301,7 @@ class DatasetBuilderV2:
                             genres=track.genres,
                         )
                     
-                    # Użyj lyrics z GPU batch (zamiast Whisper call)
+                    # Use lyrics from GPU batch (instead of Whisper call)
                     if self.extract_lyrics:
                         # gpu_data['lyrics'] to dict {'text': ..., 'language': ..., 'segments': [...]}
                         lyrics_data = gpu_data.get('lyrics', {})
@@ -4490,21 +4484,21 @@ class DatasetBuilderV2:
                     language='en',
                 )
             
-            # CLAP Embeddings - użyj z batch jeśli dostępne
+            # CLAP Embeddings - use from batch if available
             clap_audio_batch = gpu_data.get('clap_audio')
             clap_text_batch = gpu_data.get('clap_text')
             
             if clap_audio_batch is not None:
-                # Użyj z batch (już obliczone)
+                # Use from batch (already computed)
                 track.vocals.clap_audio_embedding = clap_audio_batch.tolist() if hasattr(clap_audio_batch, 'tolist') else clap_audio_batch
             elif self.clap_processor:
-                # Fallback - oblicz jeśli brak w batch
+                # Fallback - compute if not in batch
                 clap_audio = self.clap_processor.get_audio_embedding(y, sr)
                 if clap_audio:
                     track.vocals.clap_audio_embedding = clap_audio
             
-            # Text embedding - oblicz z nowego promptu (po LLM enhancement)
-            # Nie używamy batch bo prompt mógł się zmienić
+            # Text embedding - compute with new prompt (after LLM enhancement)
+            # Not using batch because prompt may have changed
             if track.global_prompt:
                 if clap_text_batch is not None:
                     track.vocals.clap_text_embedding = clap_text_batch.tolist() if hasattr(clap_text_batch, 'tolist') else clap_text_batch
@@ -4537,7 +4531,7 @@ class DatasetBuilderV2:
             'sample_rate': track.sample_rate,
             'artist': track.artist,
             'genres': track.genres,
-            # Na poziomie tracka dla łatwego dostępu
+            # At track level for easy access
             'language': track.language or track.vocals.lyrics_language,
             'explicit': track.explicit if track.explicit is not None else track.vocals.explicit,
             'global_prompt': track.global_prompt,
@@ -4568,7 +4562,7 @@ class DatasetBuilderV2:
                 'chords': track.features.chords,
                 'chord_sequence': track.features.chord_sequence,
             },
-            # 🎤 Vocal data - OBA embeddingi dla różnych trybów inference
+            # 🎤 Vocal data - BOTH embeddings for different inference modes
             'vocals': {
                 'has_vocals': bool(track.vocals.has_vocals),
                 'vocal_confidence': float(track.vocals.vocal_confidence),
@@ -4580,10 +4574,10 @@ class DatasetBuilderV2:
                 'voice_embedding_separated': track.vocals.voice_embedding_separated,  # 192-dim SpeechBrain
                 'separation_method': track.vocals.separation_method,  # 'demucs', 'none'
                 
-                # 🎤 Ścieżka do zapisanych czystych wokali (per artysta)
-                'vocals_path': track.vocals.vocals_path,  # np. "data_v2/vocals/zeus/abc123.wav"
+                # 🎤 Path to saved clean vocals (per artist)
+                'vocals_path': track.vocals.vocals_path,  # e.g., "data_v2/vocals/zeus/abc123.wav"
                 
-                # Metadane embeddingów
+                # Embedding metadata
                 'embedding_backend': track.vocals.embedding_backend,
                 'embedding_dim': int(track.vocals.embedding_dim),
                 
@@ -4698,9 +4692,9 @@ class DatasetBuilderV2:
             audio_files = _apply_sharding(audio_files, shard_index, total_shards, shard_by)
             print(f"   📦 Shard {shard_index}: {len(audio_files)} files (z {original_count})")
         
-        # 📋 WALIDACJA METADANYCH (jeśli wymagana)
+        # 📋 METADATA VALIDATION (if required)
         if self.require_metadata_check:
-            print("\n🔍 Sprawdzam metadane (require_metadata_check=True)...")
+            print("\n🔍 Checking metadata (require_metadata_check=True)...")
             missing_genre = []
             missing_artist = []
             
@@ -4744,11 +4738,11 @@ class DatasetBuilderV2:
             audio_files = audio_files[:max_tracks]
             print(f"   Limited to {max_tracks} tracks")
         
-        # 💾 CHECKPOINT: Filtruj już przetworzone pliki
+        # 💾 CHECKPOINT: Filter already processed files
         if self.checkpoint_manager:
             audio_files = self.checkpoint_manager.get_files_to_process(audio_files)
             if not audio_files:
-                print("\n✅ Wszystkie pliki już przetworzone!")
+                print("\n✅ All files already processed!")
                 print("   Użyj --auto_merge aby zmergować do finalnego datasetu")
                 if auto_merge:
                     return self.checkpoint_manager.merge_to_final(output_path)
@@ -4792,7 +4786,7 @@ class DatasetBuilderV2:
                             batch_metadata,
                         )
                         
-                        # Przetwórz każdy wynik z batcha
+                        # Process each result from batch
                         for i, (file_path, gpu_data) in enumerate(zip(batch_files, batch_results)):
                             try:
                                 track = self.process_track_with_gpu_data(
@@ -4811,19 +4805,19 @@ class DatasetBuilderV2:
                                     processed_count += 1
                                     
                             except Exception as e:
-                                print(f"\n  ❌ Błąd przetwarzania {file_path}: {e}")
+                                print(f"\n  ❌ Error processing {file_path}: {e}")
                                 if self.checkpoint_manager:
                                     self.checkpoint_manager.mark_failed(str(file_path), str(e))
                     
                 except KeyboardInterrupt:
-                    print("\n\n⚠️ Przerwano przez użytkownika (Ctrl+C)")
+                    print("\n\n⚠️ Interrupted by user (Ctrl+C)")
                     if self.checkpoint_manager:
                         self.checkpoint_manager._save_progress()
-                        print(f"💾 Zapisano checkpoint: {processed_count} tracków")
+                        print(f"💾 Saved checkpoint: {processed_count} tracks")
                     raise
                 except Exception as e:
-                    print(f"\n  ❌ Błąd batch processing: {e}")
-                    # Fallback: przetwórz pojedynczo
+                    print(f"\n  ❌ Batch processing error: {e}")
+                    # Fallback: process individually
                     for file_path in batch_files:
                         try:
                             track = self.process_track(file_path, extract_features, with_segments)
@@ -4841,7 +4835,7 @@ class DatasetBuilderV2:
                 print(f"   Processed {min(batch_end, len(audio_files))}/{len(audio_files)} tracks")
         
         else:
-            # 🐢 SEQUENTIAL MODE (domyślnie lub gdy batch_size=1)
+            # 🐢 SEQUENTIAL MODE (default or when batch_size=1)
             for file_path in tqdm(audio_files, desc="Processing"):
                 try:
                     track = self.process_track(
@@ -4870,21 +4864,21 @@ class DatasetBuilderV2:
                     if self.checkpoint_manager:
                         self.checkpoint_manager.mark_failed(str(file_path), str(e))
         
-        # 💾 CHECKPOINT: Merge lub standardowy zapis
+        # 💾 CHECKPOINT: Merge or standard save
         if self.checkpoint_manager:
-            # Zapisz końcowy progress
+            # Save final progress
             self.checkpoint_manager._save_progress()
             
             if auto_merge:
                 print(f"\n💾 Merging checkpoints...")
                 stats = self.checkpoint_manager.merge_to_final(output_path)
             else:
-                print(f"\n✅ Przetworzono {processed_count} tracków")
-                print(f"   Checkpointy w: {self.checkpoint_manager.run_dir}")
-                print(f"   Merguj ręcznie: python build_dataset_v2.py --merge --output {output_path}")
+                print(f"\n✅ Processed {processed_count} tracks")
+                print(f"   Checkpoints in: {self.checkpoint_manager.run_dir}")
+                print(f"   Merge manually: python build_dataset_v2.py --merge --output {output_path}")
                 return self.checkpoint_manager.stats
         else:
-            # Standardowy zapis (bez checkpointów)
+            # Standard save (without checkpoints)
             print(f"\n✅ Processed {len(tracks)} tracks successfully")
             
             # Calculate statistics
@@ -4944,7 +4938,7 @@ class DatasetBuilderV2:
             with open(output_path_obj, 'w', encoding='utf-8') as f:
                 json.dump(output_data, f, indent=2, ensure_ascii=False)
             
-            # 📋 Generuj raport brakujących metadanych
+            # 📋 Generate missing metadata report
             missing_metadata = []
             for track in tracks:
                 if track.missing_fields:
@@ -5035,7 +5029,7 @@ def _apply_sharding(
         return [f for f in files if get_shard(f) == shard_index]
     
     elif strategy == 'alphabetical':
-        # Sortuj alfabetycznie i podziel równo
+        # Sort alphabetically and divide evenly
         sorted_files = sorted(files, key=lambda f: str(f).lower())
         chunk_size = len(sorted_files) // total_shards
         remainder = len(sorted_files) % total_shards
@@ -5046,13 +5040,13 @@ def _apply_sharding(
         return sorted_files[start:end]
     
     elif strategy == 'directory':
-        # Grupuj po katalogu nadrzędnym
+        # Group by parent directory
         from collections import defaultdict
         dir_files = defaultdict(list)
         for f in files:
             dir_files[f.parent].append(f)
         
-        # Sortuj katalogi i przypisz do shardów
+        # Sort directories and assign to shards
         sorted_dirs = sorted(dir_files.keys(), key=lambda d: str(d).lower())
         result = []
         for i, d in enumerate(sorted_dirs):
@@ -5175,7 +5169,7 @@ def main():
     parser.add_argument('--genres_csv', type=str, default=None,
                         help='Genres metadata CSV (for genre_id to name mapping)')
     
-    # 📋 METADATA MAPPING (dla plików bez ID3 tagów lub dla uzupełnienia)
+    # 📋 METADATA MAPPING (for files without ID3 tags or for completion)
     parser.add_argument('--metadata_mapping', type=str, default=None,
                         help='JSON/CSV file with manual metadata mapping (highest priority)')
     parser.add_argument('--require_metadata_check', action='store_true',
@@ -5213,17 +5207,17 @@ def main():
     parser.add_argument('--segments_only', action='store_true',
                         help='Only segment annotations, minimal features')
     
-    # 🎤 Vocal processing - ZAWSZE WŁĄCZONE (brak flag do wyłączenia)
+    # 🎤 Vocal processing - ALWAYS ENABLED (no flags to disable)
     parser.add_argument('--whisper_model', type=str, default='large-v3',
                         choices=['tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3'],
-                        help='Whisper model size for lyrics extraction (large-v3 najlepszy dla PL)')
+                        help='Whisper model size for lyrics extraction (large-v3 best for PL)')
     parser.add_argument('--device', type=str, default='cpu',
                         help='Device for vocal processing (cpu/cuda)')
     parser.add_argument('--pitch_method', type=str, default='crepe',
                         choices=['pyin', 'crepe'],
                         help='F0/pitch extraction method: crepe (accurate, default) or pyin (fast fallback)')
     
-    # 🤖 LLM prompt enhancement - ZAWSZE WŁĄCZONE (brak flagi do wyłączenia)
+    # 🤖 LLM prompt enhancement - ALWAYS ENABLED (no flag to disable)
     parser.add_argument('--llm_model', type=str, default='gpt-4o-mini',
                         help='OpenAI model to use (default: gpt-4o-mini)')
     parser.add_argument('--llm_cache', type=str, default='./data_v2/.prompt_cache.json',
@@ -5247,7 +5241,7 @@ def main():
     parser.add_argument('--estimate_time', action='store_true',
                         help='Only estimate processing time, do not build')
     
-    # 📦 SHARDING (dla 1M+ plików)
+    # 📦 SHARDING (for 1M+ files)
     parser.add_argument('--shard_index', type=int, default=None,
                         help='Shard index (0-based). Use with --total_shards')
     parser.add_argument('--total_shards', type=int, default=None,
@@ -5265,39 +5259,39 @@ def main():
         stats = _merge_sharded_datasets(args.merge_shards, args.output)
         return
     
-    # 📋 LISTA RUNÓW
+    # 📋 LIST RUNS
     if args.list_runs:
         if not args.checkpoint_dir:
-            print("❌ Podaj --checkpoint_dir")
+            print("❌ Provide --checkpoint_dir")
             return
         
         runs = CheckpointManager.list_runs(args.checkpoint_dir)
         if not runs:
-            print("Brak checkpointów")
+            print("No checkpoints")
             return
         
-        print(f"\n📂 Checkpointy w {args.checkpoint_dir}:")
+        print(f"\n📂 Checkpoints in {args.checkpoint_dir}:")
         print("-" * 70)
         for run in runs:
             name_str = f" ({run['run_name']})" if run.get('run_name') else ""
             print(f"  📁 {run['run_id']}{name_str}")
-            print(f"     Przetworzonych: {run['processed']}, Nieudanych: {run['failed']}")
-            print(f"     Ostatnia aktualizacja: {run.get('last_update', 'N/A')}")
+            print(f"     Processed: {run['processed']}, Failed: {run['failed']}")
+            print(f"     Last update: {run.get('last_update', 'N/A')}")
         return
     
-    # 🔄 MERGE RUNÓW
+    # 🔄 MERGE RUNS
     if args.merge or args.merge_runs:
         if not args.checkpoint_dir:
-            print("❌ Podaj --checkpoint_dir")
+            print("❌ Provide --checkpoint_dir")
             return
         
         if args.merge_runs:
             run_ids = args.merge_runs
         else:
-            # Merge najnowszego runu
+            # Merge latest run
             runs = CheckpointManager.list_runs(args.checkpoint_dir)
             if not runs:
-                print("❌ Brak checkpointów do zmergowania")
+                print("❌ No checkpoints to merge")
                 return
             run_ids = [runs[0]['run_id']]
         
@@ -5307,17 +5301,17 @@ def main():
             run_ids=run_ids,
             output_path=args.output,
         )
-        print(f"✅ Zmergowano {stats['total_tracks']} tracków")
+        print(f"✅ Merged {stats['total_tracks']} tracks")
         return
     
-    # 📦 SHARDING - walidacja argumentów
+    # 📦 SHARDING - argument validation
     if (args.shard_index is not None) != (args.total_shards is not None):
-        print("❌ Użyj --shard_index RAZEM z --total_shards")
+        print("❌ Use --shard_index TOGETHER with --total_shards")
         return
     
     if args.shard_index is not None:
         if args.shard_index < 0 or args.shard_index >= args.total_shards:
-            print(f"❌ --shard_index musi być w zakresie 0 do {args.total_shards - 1}")
+            print(f"❌ --shard_index must be in range 0 to {args.total_shards - 1}")
             return
         print(f"📦 SHARD MODE: shard {args.shard_index + 1}/{args.total_shards} (strategy: {args.shard_by})")
     
@@ -5328,7 +5322,7 @@ def main():
     if args.segments_only:
         extract_features = False
     
-    # WSZYSTKO ZAWSZE WŁĄCZONE - brak flag do wyłączenia
+    # EVERYTHING ALWAYS ENABLED - no flags to disable
     extract_vocals = True
     extract_lyrics = True
     use_demucs = True
@@ -5350,7 +5344,7 @@ def main():
         for ext in ['.mp3', '.wav', '.flac', '.ogg']:
             audio_files.extend(audio_dir.rglob(f'*{ext}'))
         
-        # Zastosuj sharding jeśli włączony
+        # Apply sharding if enabled
         if args.shard_index is not None:
             audio_files = _apply_sharding(
                 audio_files, args.shard_index, args.total_shards, args.shard_by
@@ -5372,7 +5366,7 @@ def main():
         require_metadata_check=args.require_metadata_check,
         min_segment_duration=args.min_segment,
         vocals_output_dir=args.vocals_output_dir,
-        # Vocal options - DOMYŚLNIE WŁĄCZONE
+        # Vocal options - ENABLED BY DEFAULT
         extract_vocals=extract_vocals,
         extract_lyrics=extract_lyrics,
         use_demucs=use_demucs,
@@ -5380,7 +5374,7 @@ def main():
         device=args.device,
         # F0/Pitch extraction
         pitch_method=args.pitch_method,
-        # LLM options - DOMYŚLNIE WŁĄCZONE (stały klucz API)
+        # LLM options - ENABLED BY DEFAULT (fixed API key)
         use_llm_prompts=use_llm,
         llm_model=args.llm_model,
         llm_cache_file=args.llm_cache,
@@ -5392,7 +5386,7 @@ def main():
         batch_size=args.batch_size,
     )
     
-    # 📦 SHARDING: Modyfikuj output path jeśli to shard
+    # 📦 SHARDING: Modify output path if this is a shard
     output_path = args.output
     if args.shard_index is not None:
         # Dodaj suffix _shard_X do nazwy pliku

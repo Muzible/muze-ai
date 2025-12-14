@@ -61,7 +61,7 @@ class F0Extractor:
         self.center = center
         self.frame_length = frame_length
         
-        # Frame rate (ramki na sekundę)
+        # Frame rate (frames per second)
         self.frame_rate = sr / hop_length
         
         # Lazy load heavy dependencies

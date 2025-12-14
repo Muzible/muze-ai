@@ -19,7 +19,7 @@ from typing import List
 
 LRELU_SLOPE = 0.1
 
-# v2: Predefiniowane konfiguracje dla różnych sample rates
+# v2: Predefined configurations for different sample rates
 VOCODER_CONFIGS = {
     # 22050 Hz: hop_length=256 → upsample ratio = 256
     22050: {
@@ -153,7 +153,7 @@ class HiFiGANGenerator(nn.Module):
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
         
-        # Oblicz całkowity upsample ratio
+        # Calculate total upsample ratio
         self.upsample_ratio = 1
         for r in upsample_rates:
             self.upsample_ratio *= r
@@ -204,7 +204,7 @@ class HiFiGANGenerator(nn.Module):
         """
         if sample_rate not in VOCODER_CONFIGS:
             print(f"⚠️ Sample rate {sample_rate} not in presets, using closest")
-            # Znajdź najbliższy
+            # Find closest
             closest = min(VOCODER_CONFIGS.keys(), key=lambda x: abs(x - sample_rate))
             sample_rate = closest
         
@@ -466,7 +466,7 @@ class HiFiGAN(nn.Module):
         return cls(n_mels=n_mels, sample_rate=sample_rate)
 
 
-# Można też użyć pretrenowanego vocodera z huggingface/speechbrain
+# Can also use pretrained vocoder from huggingface/speechbrain
 class PretrainedVocoder:
     """
     Wrapper dla pretrenowanych vocoderów
@@ -494,7 +494,7 @@ if __name__ == "__main__":
     print("🎵 Testing HiFi-GAN Vocoder v2")
     print("="*60)
     
-    # v2: Test dla 32kHz (domyślne)
+    # v2: Test for 32kHz (default)
     print("\n📊 Testing 32kHz vocoder (default)...")
     vocoder_32k = HiFiGANGenerator.from_sample_rate(32000, n_mels=128)
     mel = torch.randn(2, 128, 100)  # [B, n_mels, time]
@@ -504,7 +504,7 @@ if __name__ == "__main__":
     print(f"  Upsample ratio: {vocoder_32k.upsample_ratio} (hop_length)")
     print(f"  Expected audio length: {mel.shape[-1] * vocoder_32k.upsample_ratio}")
     
-    # v2: Test dla różnych sample rates
+    # v2: Test for different sample rates
     print("\n📊 Testing different sample rates...")
     for sr in [22050, 32000, 44100, 48000]:
         vocoder = HiFiGANGenerator.from_sample_rate(sr, n_mels=128)

@@ -192,7 +192,7 @@ class Encoder(nn.Module):
                 in_ch = out_ch
             if i < len(channels) - 1:
                 block.append(nn.Conv2d(out_ch, out_ch, 4, stride=2, padding=1))  # Downsample
-            if i >= 2:  # Attention na głębszych warstwach
+            if i >= 2:  # Attention on deeper layers
                 block.append(AttentionBlock(out_ch))
             self.down_blocks.append(block)
         
@@ -273,7 +273,7 @@ class Decoder(nn.Module):
                 in_ch = out_ch
             if i < len(channels) - 1:
                 block.append(nn.ConvTranspose2d(out_ch, out_ch, 4, stride=2, padding=1))  # Upsample
-            if i < 2:  # Attention na głębszych warstwach
+            if i < 2:  # Attention on deeper layers
                 block.append(AttentionBlock(out_ch))
             self.up_blocks.append(block)
         
@@ -330,12 +330,14 @@ class AudioVAE(nn.Module):
     4. Mel -> Audio (vocoder, np. HiFi-GAN)
     """
     
-    # Default channels dla różnych rozmiarów latent
+    # Default channels for different latent sizes
     LATENT_CONFIGS = {
-        8: [64, 128, 256, 512],      # Mały (2.5M params)
-        32: [64, 128, 256, 512],      # Średni (5M params)
-        64: [96, 192, 384, 768],      # Duży (15M params)
-        128: [128, 256, 512, 1024],   # Bardzo duży (40M params)
+        8: [64, 128, 256, 512],        # Small (~55M params)
+        32: [64, 128, 256, 512],        # Medium (~56M params)
+        64: [96, 192, 384, 768],        # Large (~125M params)
+        128: [128, 256, 512, 1024],     # Very large (~224M params)
+        256: [192, 384, 768, 1536],     # XXL (~450M params)
+        512: [256, 512, 1024, 2048],    # Maximum (~890M params)
     }
     
     def __init__(
@@ -473,7 +475,7 @@ class AudioVAE(nn.Module):
         mel_recon = output['mel_recon']
         mel_input = output['mel_input']
         
-        # Dopasuj rozmiary (encoder/decoder mogą mieć różne rozmiary przez stride)
+        # Match sizes (encoder/decoder may have different sizes due to stride)
         min_time = min(mel_recon.shape[-1], mel_input.shape[-1])
         mel_recon = mel_recon[..., :min_time]
         mel_input = mel_input[..., :min_time]
@@ -494,13 +496,13 @@ class AudioVAE(nn.Module):
             'kl': kl_loss,
         }
         
-        # v2: Multi-Resolution STFT Loss (jeśli dostępne audio)
+        # v2: Multi-Resolution STFT Loss (if audio available)
         if self.use_stft_loss and audio_input is not None:
             try:
                 # Rekonstruuj audio z mel
                 audio_recon = self.mel_to_audio(mel_recon)
                 
-                # Dopasuj długość
+                # Match length
                 min_len = min(audio_input.shape[-1], audio_recon.shape[-1])
                 audio_input_trimmed = audio_input[..., :min_len]
                 audio_recon_trimmed = audio_recon[..., :min_len]
@@ -518,7 +520,7 @@ class AudioVAE(nn.Module):
                     'stft_total': stft_total,
                 })
             except Exception as e:
-                # Fallback jeśli STFT loss nie działa
+                # Fallback if STFT loss doesn't work
                 pass
         
         return loss_dict
@@ -593,7 +595,7 @@ if __name__ == "__main__":
         print(f"   STFT Mag: {loss['stft_mag']:.4f}")
         print(f"   STFT Total: {loss['stft_total']:.4f}")
     
-    # Liczba parametrów
+    # Number of parameters
     params = sum(p.numel() for p in model.parameters())
     print(f"\n📊 Total parameters: {params:,} ({params/1e6:.1f}M)")
     

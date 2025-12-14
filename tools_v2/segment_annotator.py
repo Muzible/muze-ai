@@ -61,18 +61,18 @@ class SectionType(Enum):
 
 @dataclass
 class MusicSegment:
-    """Pojedynczy segment utworu"""
-    start_time: float           # Czas rozpoczęcia (sekundy)
-    end_time: float             # Czas zakończenia (sekundy)
-    section_type: str           # Typ sekcji (z SectionType)
-    confidence: float           # Pewność detekcji (0-1)
+    """Single track segment"""
+    start_time: float           # Start time (seconds)
+    end_time: float             # End time (seconds)
+    section_type: str           # Section type (from SectionType)
+    confidence: float           # Detection confidence (0-1)
     
-    # Cechy muzyczne segmentu
-    tempo: float                # Średnie tempo w BPM
-    key: str                    # Dominująca tonacja
-    energy: float               # Średnia energia (0-1)
-    loudness: float             # Średnia głośność (dB)
-    spectral_centroid: float    # Jasność dźwięku
+    # Musical features of segment
+    tempo: float                # Average tempo in BPM
+    key: str                    # Dominant key
+    energy: float               # Average energy (0-1)
+    loudness: float             # Average loudness (dB)
+    spectral_centroid: float    # Sound brightness
     
     # Dodatkowe informacje
     has_vocals: bool            # Czy segment zawiera wokale
@@ -85,7 +85,7 @@ class MusicSegment:
 
 @dataclass 
 class AnnotatedTrack:
-    """Pełna anotacja utworu"""
+    """Full track annotation"""
     track_id: str
     file_path: str
     duration: float
@@ -121,8 +121,8 @@ class SegmentAnnotator:
         self,
         sample_rate: int = 22050,
         hop_length: int = 512,
-        min_segment_duration: float = 4.0,  # Minimalna długość segmentu (s)
-        max_segment_duration: float = 60.0,  # Maksymalna długość segmentu (s)
+        min_segment_duration: float = 4.0,  # Minimum segment length (s)
+        max_segment_duration: float = 60.0,  # Maximum segment length (s)
         n_mfcc: int = 20,
         n_chroma: int = 12,
         vocal_detection: bool = True,
@@ -168,12 +168,12 @@ class SegmentAnnotator:
         print("  🔍 Extracting features...")
         features = self._extract_features(y, sr)
         
-        # 3. Znajdź granice segmentów
+        # 3. Find segment boundaries
         print("  ✂️  Detecting boundaries...")
         boundaries = self._detect_boundaries(features, duration)
         print(f"     Found {len(boundaries)-1} segments")
         
-        # 4. Analizuj każdy segment
+        # 4. Analyze each segment
         print("  📊 Analyzing segments...")
         raw_segments = self._analyze_segments(y, sr, boundaries, features)
         
@@ -237,10 +237,10 @@ class SegmentAnnotator:
         # 1. Ekstrahuj cechy
         features = self._extract_features(y, sr)
         
-        # 2. Znajdź granice segmentów
+        # 2. Find segment boundaries
         boundaries = self._detect_boundaries(features, duration)
         
-        # 3. Analizuj każdy segment
+        # 3. Analyze each segment
         raw_segments = self._analyze_segments(y, sr, boundaries, features)
         
         # 4. Klasteruj podobne segmenty
@@ -278,7 +278,7 @@ class SegmentAnnotator:
         
         features = {}
         
-        # Chroma (harmonia) - używamy chroma_stft zamiast chroma_cqt dla kompatybilności
+        # Chroma (harmony) - using chroma_stft instead of chroma_cqt for compatibility
         try:
             features['chroma'] = librosa.feature.chroma_cqt(
                 y=y, sr=sr, hop_length=self.hop_length
@@ -297,7 +297,7 @@ class SegmentAnnotator:
         # RMS energy
         features['rms'] = librosa.feature.rms(y=y, hop_length=self.hop_length)[0]
         
-        # Spectral centroid (jasność)
+        # Spectral centroid (brightness)
         features['spectral_centroid'] = librosa.feature.spectral_centroid(
             y=y, sr=sr, hop_length=self.hop_length
         )[0]
@@ -353,7 +353,7 @@ class SegmentAnnotator:
         # Cosine similarity
         ssm = np.dot(features_norm.T, features_norm)
         
-        # Enhance diagonals (dla powtórzeń)
+        # Enhance diagonals (for repetitions)
         ssm = ndimage.median_filter(ssm, size=3)
         
         return ssm
@@ -439,7 +439,7 @@ class SegmentAnnotator:
         boundaries: List[float],
         features: Dict
     ) -> List[Dict]:
-        """Analizuje każdy segment i oblicza jego cechy"""
+        """Analyzes each segment and computes its features"""
         
         segments = []
         fps = features['fps']
@@ -478,11 +478,11 @@ class SegmentAnnotator:
             rms_segment = features['rms'][start_frame:end_frame]
             energy = float(np.mean(rms_segment)) if len(rms_segment) > 0 else 0.5
             
-            # Głośność (dB) - konwertuj skalar na array dla kompatybilności z numpy 1.24+
+            # Loudness (dB) - convert scalar to array for numpy 1.24+ compatibility
             mean_amplitude = np.mean(np.abs(y_segment)) + 1e-8
             loudness = float(20 * np.log10(mean_amplitude))  # Manual dB conversion
             
-            # Spectral centroid (jasność)
+            # Spectral centroid (brightness)
             sc_segment = features['spectral_centroid'][start_frame:end_frame]
             spectral_centroid = float(np.mean(sc_segment)) if len(sc_segment) > 0 else 2000
             
@@ -505,10 +505,10 @@ class SegmentAnnotator:
         return segments
     
     def _detect_key(self, chroma: np.ndarray) -> str:
-        """Wykrywa tonację z chroma features"""
+        """Detects key from chroma features"""
         keys = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
         
-        # Średnia chroma
+        # Average chroma
         chroma_mean = np.mean(chroma, axis=1)
         
         # Profiles dla major i minor
@@ -541,7 +541,7 @@ class SegmentAnnotator:
     
     def _detect_vocals_simple(self, y: np.ndarray, sr: int) -> bool:
         """Uproszczona detekcja wokali (na podstawie cech spektralnych)"""
-        # Spectral flatness - wokal ma mniejszą flatness niż instrumenty
+        # Spectral flatness - vocals have lower flatness than instruments
         flatness = librosa.feature.spectral_flatness(y=y)[0]
         mean_flatness = np.mean(flatness)
         
@@ -553,7 +553,7 @@ class SegmentAnnotator:
         zcr = librosa.feature.zero_crossing_rate(y)[0]
         mean_zcr = np.mean(zcr)
         
-        # Heurystyka: wokal ma niską flatness, średni bandwidth, wysoki ZCR
+        # Heuristic: vocals have low flatness, medium bandwidth, high ZCR
         vocal_score = (
             (1 - min(1, mean_flatness * 5)) * 0.4 +
             (1 if 1500 < mean_bandwidth < 4000 else 0.5) * 0.3 +
@@ -568,7 +568,7 @@ class SegmentAnnotator:
         features: Dict,
         boundaries: List[float]
     ) -> List[Dict]:
-        """Klasteruje podobne segmenty (wykrywa powtórzenia)"""
+        """Clusters similar segments (detects repetitions)"""
         
         if len(segments) < 2:
             for s in segments:
@@ -604,7 +604,7 @@ class SegmentAnnotator:
         for i, seg in enumerate(segments):
             seg['cluster'] = int(labels[i])
         
-        # Znajdź powtórzenia (ten sam klaster)
+        # Find repetitions (same cluster)
         cluster_first = {}
         for i, seg in enumerate(segments):
             cluster = seg['cluster']
@@ -635,14 +635,14 @@ class SegmentAnnotator:
         mean_energy = np.mean(energies)
         std_energy = np.std(energies)
         
-        # Znajdź najczęstszy klaster (prawdopodobnie Verse lub Chorus)
+        # Find most common cluster (probably Verse or Chorus)
         clusters = [s['cluster'] for s in segments]
         cluster_counts = {}
         for c in clusters:
             cluster_counts[c] = cluster_counts.get(c, 0) + 1
         most_common_cluster = max(cluster_counts, key=cluster_counts.get)
         
-        # Średnia energia najczęstszego klastra
+        # Average energy of most common cluster
         most_common_energy = np.mean([
             s['energy'] for s in segments if s['cluster'] == most_common_cluster
         ])
@@ -652,7 +652,7 @@ class SegmentAnnotator:
             relative_energy = seg['energy'] - mean_energy
             is_repetition = seg.get('is_repetition_of') is not None
             
-            # Domyślnie unknown
+            # Default unknown
             section_type = SectionType.UNKNOWN
             confidence = 0.5
             
@@ -735,7 +735,7 @@ class SegmentAnnotator:
         return labeled
     
     def _generate_prompts(self, segments: List[MusicSegment]) -> List[MusicSegment]:
-        """Generuje automatyczne prompty dla każdego segmentu"""
+        """Generates automatic prompts for each segment"""
         
         for seg in segments:
             parts = []
@@ -792,7 +792,7 @@ class SegmentAnnotator:
         return segments
     
     def _get_dominant_key(self, keys: List[str]) -> str:
-        """Znajduje dominującą tonację"""
+        """Finds the dominant key"""
         key_counts = {}
         for key in keys:
             key_counts[key] = key_counts.get(key, 0) + 1
@@ -800,7 +800,7 @@ class SegmentAnnotator:
 
 
 class BatchAnnotator:
-    """Anotuje wiele plików równolegle"""
+    """Annotates multiple files in parallel"""
     
     def __init__(self, annotator: SegmentAnnotator, n_jobs: int = 4):
         self.annotator = annotator

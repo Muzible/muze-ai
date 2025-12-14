@@ -3,8 +3,8 @@
 
 Generuje pełne 2-4 minutowe utwory z koherentną strukturą sekcji.
 
-Użycie:
-    # Podstawowe użycie
+Usage:
+    # Basic usage
     python inference_v2.py \
         --prompt "Energiczny pop z chwytliwym refrenem, żeński wokal" \
         --duration 180 \
@@ -16,19 +16,19 @@ Użycie:
         --template verse_chorus \
         --duration 120
     
-    # 🎤 STYLE TRANSFER: "W stylu artysty X" (ogólne brzmienie)
+    # 🎤 STYLE TRANSFER: "In the style of artist X" (general sound)
     python inference_v2.py \
         --prompt "Electronic dance track" \
         --style_of "Metallica" \
         --duration 180
     
-    # 🎤 VOICE CLONING: "Jak artysta X" (dokładny głos)
+    # 🎤 VOICE CLONING: "Like artist X" (exact voice)
     python inference_v2.py \
         --prompt "Rock ballad with vocals" \
         --voice_clone "Metallica" \
         --duration 180
     
-    # 🎤 VOICE CLONING z własnych sampli (folder)
+    # 🎤 VOICE CLONING from custom samples (folder)
     python inference_v2.py \
         --prompt "Pop song" \
         --voice_clone_samples ./my_voice_samples/ \
@@ -40,14 +40,14 @@ Użycie:
         --voice_clone_samples ./sample.wav \
         --duration 60
 
-    # 📝 LYRICS: Generacja ze śpiewem do podanego tekstu
+    # 📝 LYRICS: Generation with vocals for given text
     python inference_v2.py \
         --prompt "Emotional ballad with piano" \
         --lyrics "I walk alone through empty streets, searching for your light" \
         --voice_clone "Adele" \
         --duration 120
 
-    # 📝 LYRICS po polsku (automatyczna detekcja języka lub --language)
+    # 📝 LYRICS in Polish (automatic language detection or --language)
     python inference_v2.py \
         --prompt "Polska ballada rockowa" \
         --lyrics "Idę sam przez puste ulice, szukam twego światła" \
@@ -78,16 +78,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 class PhonemeProcessor:
     """
-    Konwersja tekstu na fonemy (IPA) dla inference.
+    Text to phoneme (IPA) conversion for inference.
     
-    Wspiera:
-    - Gruut: en, de, es, fr, it, ru, cs, nl, sv (lepszy dla zachodnich)
-    - eSpeak: pl, uk, pt, ja, ko, zh, tr, vi, hi (dla reszty świata)
+    Supports:
+    - Gruut: en, de, es, fr, it, ru, cs, nl, sv (better for Western languages)
+    - eSpeak: pl, uk, pt, ja, ko, zh, tr, vi, hi (for the rest of the world)
     
-    Auto-fallback: jeśli Gruut nie obsługuje języka → eSpeak
+    Auto-fallback: if Gruut doesn't support the language → eSpeak
     """
     
-    # Języki obsługiwane przez Gruut (preferowane)
+    # Languages supported by Gruut (preferred)
     GRUUT_LANGUAGES = {
         'en': 'en-us', 'en-us': 'en-us', 'en-gb': 'en-gb',
         'de': 'de-de', 'de-de': 'de-de',
@@ -101,7 +101,7 @@ class PhonemeProcessor:
         'ar': 'ar', 'fa': 'fa',
     }
     
-    # Języki dla eSpeak (w tym polski!)
+    # Languages for eSpeak (including Polish!)
     ESPEAK_LANGUAGES = {
         'pl': 'pl', 'polish': 'pl',
         'uk': 'uk', 'ukrainian': 'uk',
@@ -186,7 +186,7 @@ class PhonemeProcessor:
             
         Returns:
             {
-                'phonemes_ipa': str,  # Pełny ciąg fonemów
+                'phonemes_ipa': str,  # Full phoneme string
                 'words': [{'word': str, 'phonemes': List[str]}],
                 'language': str,
                 'backend': str,  # 'gruut', 'espeak', lub None
@@ -207,7 +207,7 @@ class PhonemeProcessor:
         
         lang_lower = language.lower() if language else 'en'
         
-        # Wybierz backend na podstawie języka
+        # Select backend based on language
         if lang_lower in self.GRUUT_LANGUAGES and self._check_gruut():
             return self._phonemize_gruut(text, lang_lower)
         elif self._check_phonemizer():
@@ -223,7 +223,7 @@ class PhonemeProcessor:
             }
     
     def _phonemize_gruut(self, text: str, language: str) -> Dict[str, Any]:
-        """Użyj Gruut dla obsługiwanych języków (en, de, es, fr, it, ru, cs, nl, sv)"""
+        """Use Gruut for supported languages (en, de, es, fr, it, ru, cs, nl, sv)"""
         from gruut import sentences
         
         gruut_lang = self.GRUUT_LANGUAGES.get(language, 'en-us')
@@ -265,13 +265,13 @@ class PhonemeProcessor:
             }
     
     def _phonemize_espeak(self, text: str, language: str) -> Dict[str, Any]:
-        """Użyj Phonemizer/eSpeak (szczególnie dla polskiego!)"""
+        """Use Phonemizer/eSpeak (especially for Polish!)"""
         from phonemizer import phonemize
         
-        # Mapuj język na kod espeak
+        # Map language to espeak code
         espeak_lang = self.ESPEAK_LANGUAGES.get(language, language)
         
-        # Sprawdź czy język jest obsługiwany
+        # Check if language is supported
         try:
             from phonemizer.backend import EspeakBackend
             supported = EspeakBackend.supported_languages()
@@ -348,7 +348,7 @@ def get_phoneme_processor() -> PhonemeProcessor:
 # ============================================
 
 def load_artist_embeddings(embeddings_path: str) -> Dict[str, Any]:
-    """Ładuje plik artist_embeddings.json"""
+    """Loads artist_embeddings.json file"""
     path = Path(embeddings_path)
     if not path.exists():
         raise FileNotFoundError(
@@ -404,7 +404,7 @@ def get_artist_embedding(
     data = embeddings[matched_artist]
     
     if mode == "voice_separated":
-        # 192-dim ECAPA-TDNN z Demucs separated vocals - najlepsza jakość
+        # 192-dim ECAPA-TDNN from Demucs separated vocals - best quality
         emb = data.get('voice_embedding_separated')
         if emb is None:
             print(f"   ⚠️ Artist '{matched_artist}' has no voice_embedding_separated")
@@ -465,7 +465,7 @@ def extract_embedding_from_samples(
         from build_dataset_v2 import VocalProcessor
         processor = VocalProcessor(
             sample_rate=16000,
-            use_demucs=True,  # Separuj wokale dla lepszej jakości
+            use_demucs=True,  # Separate vocals for better quality
         )
     except ImportError:
         print("   ⚠️ VocalProcessor not available, using basic extraction")
@@ -483,8 +483,10 @@ def extract_embedding_from_samples(
             
             if processor:
                 result = processor.extract_all_embeddings(y, sr)
-                # Preferuj separated embedding
-                emb = result.get('embedding_separated') or result.get('embedding_mix')
+                # Prefer separated embedding (don't use 'or' with numpy arrays!)
+                emb = result.get('embedding_separated')
+                if emb is None:
+                    emb = result.get('embedding_mix')
             else:
                 # Fallback - basic resemblyzer
                 try:
@@ -506,7 +508,7 @@ def extract_embedding_from_samples(
         print(f"   ❌ No embeddings extracted")
         return None
     
-    # Uśrednij
+    # Average
     avg_embedding = np.mean(embeddings, axis=0)
     print(f"   ✅ Extracted and averaged {len(embeddings)} embeddings")
     
@@ -534,7 +536,7 @@ def load_voice_conditioning(
     embedding = None
     mode_str = ""
     
-    # 1. Własne sample użytkownika
+    # 1. User's custom samples
     if args.voice_clone_samples:
         print(f"\n🎤 Extracting voice embedding from: {args.voice_clone_samples}")
         embedding = extract_embedding_from_samples(args.voice_clone_samples, device)
@@ -608,7 +610,7 @@ def load_voice_conditioning(
 # ============================================
 
 def load_models(args, device):
-    """Ładowanie wszystkich modeli z automatyczną detekcją konfiguracji"""
+    """Loading all models with automatic configuration detection"""
     from models.audio_vae import AudioVAE
     from models.vocoder import HiFiGAN
     from models_v2.composition_planner import CompositionPlanner
@@ -622,18 +624,20 @@ def load_models(args, device):
     if use_fp16:
         print("🚀 Using FP16 inference (half precision)")
     
-    # VAE - ładuj checkpoint żeby określić latent_dim
+    # VAE - load checkpoint to determine latent_dim
     print("📦 Loading VAE...")
     vae_ckpt = torch.load(args.vae_checkpoint, map_location=device)
     
     # Wykryj latent_dim z checkpointu
     latent_dim = 128  # default
+    latent_scale = 1.0  # default (brak skalowania)
     if 'config' in vae_ckpt:
         latent_dim = vae_ckpt['config'].get('latent_dim', 128)
+        latent_scale = vae_ckpt['config'].get('latent_scale', 1.0)
     elif 'latent_dim' in vae_ckpt:
         latent_dim = vae_ckpt['latent_dim']
     else:
-        # Spróbuj wykryć z wag
+        # Try to detect from weights
         state_dict = vae_ckpt.get('model_state_dict', vae_ckpt)
         for key in state_dict:
             if 'conv_out.weight' in key:
@@ -642,6 +646,7 @@ def load_models(args, device):
                 break
     
     print(f"   Detected latent_dim: {latent_dim}")
+    print(f"   Using latent_scale: {latent_scale:.4f}")
     
     vae = AudioVAE(latent_dim=latent_dim).to(device)
     vae.load_state_dict(vae_ckpt.get('model_state_dict', vae_ckpt))
@@ -650,6 +655,7 @@ def load_models(args, device):
         vae = vae.half()
     models['vae'] = vae
     models['latent_dim'] = latent_dim
+    models['latent_scale'] = latent_scale  # ✅ Save for use during decode
     models['dtype'] = dtype
     
     # Composition Planner
@@ -678,10 +684,11 @@ def load_models(args, device):
     
     # U-Net v2 + LDM - automatyczna detekcja konfiguracji z checkpointu
     print("📦 Loading Latent Diffusion v2...")
-    ldm_ckpt = torch.load(args.ldm_checkpoint, map_location=device)
+    ldm_ckpt = torch.load(args.ldm_checkpoint, map_location=device, weights_only=False)
     
-    # Wykryj konfigurację z checkpointu
+    # Detect configuration from checkpoint
     ldm_config = ldm_ckpt.get('config', {})
+    state_dict = ldm_ckpt.get('model_state_dict', ldm_ckpt)
     
     # model_channels - priorytet: checkpoint > argument > default
     if 'model_channels' in ldm_config:
@@ -691,8 +698,7 @@ def load_models(args, device):
         model_channels = args.model_channels
         print(f"   Using model_channels from argument: {model_channels}")
     else:
-        # Spróbuj wykryć z wag (conv_in.weight shape)
-        state_dict = ldm_ckpt.get('model_state_dict', ldm_ckpt)
+        # Try to detect from weights (conv_in.weight shape)
         model_channels = 320  # default
         for key in state_dict:
             if 'unet.conv_in.weight' in key or 'conv_in.weight' in key:
@@ -701,6 +707,14 @@ def load_models(args, device):
                 print(f"   Detected model_channels from weights: {model_channels}")
                 break
     
+    # num_timesteps - wykryj z betas/alphas w checkpoincie
+    num_timesteps = ldm_config.get('num_timesteps', 1000)
+    for key in state_dict:
+        if key in ['betas', 'alphas', 'alphas_cumprod']:
+            num_timesteps = state_dict[key].shape[0]
+            print(f"   Detected num_timesteps from checkpoint: {num_timesteps}")
+            break
+    
     # channel_mult - z checkpointu lub default
     channel_mult = ldm_config.get('channel_mult', [1, 2, 4, 4])
     
@@ -708,7 +722,7 @@ def load_models(args, device):
     use_voice_stream = ldm_config.get('use_voice_stream', True)
     use_dual_voice = ldm_config.get('use_dual_voice', True)
     
-    print(f"   Config: latent_dim={latent_dim}, model_channels={model_channels}")
+    print(f"   Config: latent_dim={latent_dim}, model_channels={model_channels}, timesteps={num_timesteps}")
     print(f"   Voice: stream={use_voice_stream}, dual={use_dual_voice}")
     
     unet = UNetV2(
@@ -722,19 +736,19 @@ def load_models(args, device):
         use_dual_voice=use_dual_voice,
     ).to(device)
     
-    ldm = LatentDiffusionV2(unet, num_timesteps=1000).to(device)
-    ldm.load_state_dict(ldm_ckpt.get('model_state_dict', ldm_ckpt))
+    ldm = LatentDiffusionV2(unet, num_timesteps=num_timesteps).to(device)
+    ldm.load_state_dict(state_dict)
     ldm.eval()
     if use_fp16:
         ldm = ldm.half()
     models['ldm'] = ldm
     
-    # Vocoder (HiFi-GAN) - zawsze FP32 dla jakości audio
+    # Vocoder (HiFi-GAN) - always FP32 for audio quality
     print("📦 Loading HiFi-GAN Vocoder...")
     vocoder = HiFiGAN().to(device)
     if args.vocoder_checkpoint and Path(args.vocoder_checkpoint).exists():
-        vocoder_ckpt = torch.load(args.vocoder_checkpoint, map_location=device)
-        # HiFiGAN checkpoint może mieć 'generator' jako klucz
+        vocoder_ckpt = torch.load(args.vocoder_checkpoint, map_location=device, weights_only=False)
+        # HiFiGAN checkpoint may have 'generator' as key
         state_dict = vocoder_ckpt.get('generator', vocoder_ckpt.get('model_state_dict', vocoder_ckpt))
         vocoder.load_state_dict(state_dict)
     models['vocoder'] = vocoder
@@ -753,7 +767,7 @@ def generate_composition_plan(
     print("\n📝 Generating composition plan...")
     
     if template:
-        # Użyj szablonu
+        # Use template
         plan = planner.generate_from_template(
             template_name=template,
             target_duration=duration,
@@ -822,19 +836,20 @@ def generate_section_audio(
         torch.tensor([section.energy]).to(device),
     )
     
-    # Konwersja do właściwego dtype dla FP16
+    # Conversion to proper dtype for FP16
     if dtype == torch.float16:
         text_embed = text_embed.half()
     
     # Sample latent
     segment_duration = min(section.duration, 10.0)  # Max 10s per segment
-    latent_length = int(segment_duration * sample_rate / 256)  # VAE downsampling
+    latent_time = int(segment_duration * sample_rate / 256 / 8)  # VAE 8x time downsampling
+    latent_height = 16  # VAE spatial compression: 128 mels -> 16
     
-    # Przygotuj voice embeddings (rozróżnienie resemblyzer vs ecapa)
+    # Prepare voice embeddings (distinguish resemblyzer vs ecapa)
     voice_emb = None
     voice_emb_separated = None
     if voice_embedding is not None:
-        ve = voice_embedding.to(dtype)  # Konwersja do właściwego dtype
+        ve = voice_embedding.to(dtype)  # Conversion to proper dtype
         if voice_embedding.shape[-1] == 256:
             # Resemblyzer embedding (mix-based)
             voice_emb = ve.unsqueeze(0) if ve.dim() == 1 else ve
@@ -845,9 +860,9 @@ def generate_section_audio(
             # Unknown dimension, try as resemblyzer
             voice_emb = ve.unsqueeze(0) if ve.dim() == 1 else ve
     
-    # Sample latent z pełnym kondycjonowaniem v3
+    # Sample latent with full v3 conditioning
     latent = ldm.sample_section(
-        shape=(1, latent_dim, latent_length),  # Używaj latent_dim z VAE
+        shape=(1, latent_dim, latent_height, latent_time),  # 4D: [B, C, H, W]
         text_embed=text_embed,
         section_type=section.section_type,
         position=position,
@@ -864,10 +879,19 @@ def generate_section_audio(
         verbose=False,
     )
     
+    # ✅ Reverse latent scaling before decode (undo training scale)
+    latent_scale = models.get('latent_scale', 1.0)
+    if latent_scale != 1.0:
+        latent = latent / latent_scale
+    
     # Decode latent to mel (konwersja do FP32 dla vocodera)
     with torch.no_grad():
         latent_fp32 = latent.float() if dtype == torch.float16 else latent
         mel = vae.float().decode(latent_fp32) if dtype == torch.float16 else vae.decode(latent)
+    
+    # Vocoder oczekuje 3D [B, mels, time], VAE zwraca 4D [B, 1, mels, time]
+    if mel.dim() == 4:
+        mel = mel.squeeze(1)  # [B, mels, time]
     
     # Vocoder to waveform (inference mode) - zawsze FP32
     with torch.no_grad():
@@ -1152,8 +1176,8 @@ def main():
         plan=plan,
         models=models,
         device=device,
-        voice_embedding=voice_embedding,  # Przekaż embedding
-        phonemes_ipa=phonemes_ipa,  # 📝 Przekaż fonemy
+        voice_embedding=voice_embedding,  # Pass embedding
+        phonemes_ipa=phonemes_ipa,  # 📝 Pass phonemes
     )
     
     # Save

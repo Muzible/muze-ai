@@ -13,7 +13,7 @@ Usage:
         --output ./data_v2/artist_embeddings.json \
         --min_tracks 3
 
-    # Z folderów vocals/ (zbiera istniejące embeddings.json)
+    # From vocals/ folders (collects existing embeddings.json)
     python tools_v2/generate_artist_embeddings.py \
         --from_vocals_dir ./data_v2/vocals/ \
         --output ./data_v2/artist_embeddings.json
@@ -51,7 +51,7 @@ import numpy as np
 
 
 def load_dataset(dataset_path: str) -> Dict[str, Any]:
-    """Ładuje dataset JSON"""
+    """Loads dataset JSON"""
     with open(dataset_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
@@ -92,7 +92,7 @@ def extract_artist_data(dataset: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         if not vocals.get('has_vocals', False):
             continue
         
-        # Style embedding (z miksu) - zawsze dostępny jeśli są wokale
+        # Style embedding (from mix) - always available if there are vocals
         style_emb = vocals.get('voice_embedding')
         if style_emb:
             artists[artist]['style_embeddings'].append(style_emb)
@@ -144,19 +144,19 @@ def compute_artist_embeddings(
         if len(style_embs) < min_tracks:
             continue
         
-        # Compute style embedding (średnia z miksu)
+        # Compute style embedding (average from mix)
         style_embedding = None
         if style_embs:
             if weighting == "confidence" and confidences:
-                # Ważona średnia
+                # Weighted average
                 weights = np.array(confidences[:len(style_embs)])
                 weights = weights / weights.sum()
                 style_embedding = np.average(style_embs, axis=0, weights=weights).tolist()
             else:
-                # Zwykła średnia
+                # Simple average
                 style_embedding = np.mean(style_embs, axis=0).tolist()
         
-        # Compute voice embedding (średnia z separowanych)
+        # Compute voice embedding (average from separated)
         voice_embedding = None
         if voice_embs:
             if weighting == "confidence" and confidences:
@@ -170,7 +170,7 @@ def compute_artist_embeddings(
         result[artist] = {
             # Embeddingi
             'style_embedding': style_embedding,  # 256-dim, dla "w stylu X" (z miksu)
-            'voice_embedding': style_embedding,  # 256-dim, alias dla kompatybilności
+            'voice_embedding': style_embedding,  # 256-dim, alias for compatibility
             'voice_embedding_separated': voice_embedding,  # 192-dim, dla "jak X" (z Demucs)
             
             # Metadata
@@ -261,7 +261,7 @@ def collect_from_vocals_dir(vocals_dir: str) -> Dict[str, Dict[str, Any]]:
             
             artist_name = data.get('artist', artist_dir.name)
             
-            # Kopiuj dane, usuwając _raw_embeddings (nie potrzebne w zbiorczym pliku)
+            # Copy data, removing _raw_embeddings (not needed in aggregate file)
             result[artist_name] = {
                 'style_embedding': data.get('style_embedding'),
                 'voice_embedding': data.get('voice_embedding'),
@@ -287,7 +287,7 @@ def main():
         description='🎤 Generate Artist Embeddings from Dataset v2 or vocals/ folders'
     )
     
-    # Źródła danych (jedno z dwóch)
+    # Data sources (one of two)
     source_group = parser.add_mutually_exclusive_group(required=True)
     source_group.add_argument('--dataset', type=str,
                               help='Path to training_dataset_v2.json')
@@ -308,7 +308,7 @@ def main():
     artist_embeddings = {}
     
     if args.from_vocals_dir:
-        # Zbierz z folderów vocals/
+        # Collect from vocals/ folders
         print(f"\n📂 Collecting embeddings from: {args.from_vocals_dir}")
         artist_embeddings = collect_from_vocals_dir(args.from_vocals_dir)
         print(f"   Found {len(artist_embeddings)} artists with embeddings")

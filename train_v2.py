@@ -4,8 +4,8 @@
 Pipeline treningu:
 1. Faza 0: Budowanie datasetu (build_dataset_v2.py) - segmenty, features, vocals, prompts
 2. Faza 1: Trening Audio VAE (kompresja audio do latent space)
-3. Faza 2: Trening Composition Planner
-4. Faza 3: Trening Latent Diffusion v2 (section-aware)
+3. Faza 2: Trening Composition Planner (generowanie struktury utworu)
+4. Faza 3: Trening Latent Diffusion v2 (section-aware) + integracja z Composition Planner
 
 Użycie:
     # Budowanie datasetu (z wokalami, lyrics, LLM prompts)
@@ -17,14 +17,17 @@ Użycie:
     # Trening Composition Planner
     python train_v2.py --phase 2 --annotations ./data_v2/dataset.json --epochs 100
     
-    # Trening LDM v2
-    python train_v2.py --phase 3 --annotations ./data_v2/dataset.json --vae_checkpoint ./checkpoints_v2/vae_best.pt
+    # Trening LDM v2 (z Composition Planner)
+    python train_v2.py --phase 3 --annotations ./data_v2/dataset.json \\
+        --vae_checkpoint ./checkpoints_v2/vae_best.pt \\
+        --composition_checkpoint ./checkpoints_v2/composition_planner_best.pt
 """
 
 import os
 import sys
 import json
 import argparse
+import platform
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +42,31 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tqdm import tqdm
+
+
+# ============================================================================
+# Collate functions (module-level for multiprocessing pickle compatibility)
+# ============================================================================
+
+def collate_vae(batch):
+    """Collate dla VAE - tylko audio"""
+    return {
+        'audio': torch.stack([b['audio'] for b in batch]),
+    }
+
+
+def collate_composition(batch):
+    """Custom collate dla composition dataset"""
+    return {
+        'sections': torch.stack([b['sections'] for b in batch]),
+        'attrs': torch.stack([b['attrs'] for b in batch]),
+        'keys': torch.stack([b['keys'] for b in batch]),
+        'vocals': torch.stack([b['vocals'] for b in batch]),
+        'duration': torch.stack([b['duration'] for b in batch]),
+        'prompts': [b['prompt'] for b in batch],  # v2: List of prompts
+        'genre_idx': torch.tensor([b['genre_idx'] for b in batch], dtype=torch.long),
+        'mood_idx': torch.tensor([b['mood_idx'] for b in batch], dtype=torch.long),
+    }
 
 
 def train_vae(args):
@@ -68,7 +96,7 @@ def train_vae(args):
     print(f"   Latent dim: {latent_dim}")
     print(f"   STFT loss: {use_stft_loss}")
     
-    # Dataset - używamy SegmentedMusicDataset ale tylko audio
+    # Dataset - using SegmentedMusicDataset but only audio
     print(f"\n📂 Loading dataset from {args.annotations}...")
     dataset = SegmentedMusicDataset(
         annotations_json=args.annotations,
@@ -86,18 +114,12 @@ def train_vae(args):
         dataset, [train_size, val_size]
     )
     
-    def collate_fn(batch):
-        """Collate dla VAE - tylko audio"""
-        return {
-            'audio': torch.stack([b['audio'] for b in batch]),
-        }
-    
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        collate_fn=collate_fn,
+        collate_fn=collate_vae,  # Module-level function for pickle
         pin_memory=True,
     )
     val_loader = DataLoader(
@@ -105,7 +127,7 @@ def train_vae(args):
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        collate_fn=collate_fn,
+        collate_fn=collate_vae,  # Module-level function for pickle
         pin_memory=True,
     )
     
@@ -215,7 +237,7 @@ def train_vae(args):
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': val_loss,
-                # v2: Zapisz konfigurację
+                # v2: Save configuration
                 'config': {
                     'sample_rate': sample_rate,
                     'latent_dim': latent_dim,
@@ -273,31 +295,19 @@ def train_composition_planner(args):
         max_tracks=args.max_tracks,
     )
     
-    def collate_composition(batch):
-        """Custom collate dla composition dataset"""
-        return {
-            'sections': torch.stack([b['sections'] for b in batch]),
-            'attrs': torch.stack([b['attrs'] for b in batch]),
-            'keys': torch.stack([b['keys'] for b in batch]),
-            'vocals': torch.stack([b['vocals'] for b in batch]),
-            'duration': torch.stack([b['duration'] for b in batch]),
-            'prompts': [b['prompt'] for b in batch],  # v2: Lista promptów
-            'genre_idx': torch.tensor([b['genre_idx'] for b in batch], dtype=torch.long),
-            'mood_idx': torch.tensor([b['mood_idx'] for b in batch], dtype=torch.long),
-        }
-    
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        collate_fn=collate_composition,  # v2: Custom collate
+        collate_fn=collate_composition,  # Module-level function for pickle
+        persistent_workers=args.num_workers > 0,  # Keep workers alive between epochs
     )
     
     print(f"   Dataset size: {len(dataset)}")
     print(f"   Batches per epoch: {len(dataloader)}")
     
-    # v2: Text Encoder dla prawdziwych embeddingów
+    # v2: Text Encoder for real embeddings
     print("\n🏗️  Creating text encoder...")
     text_encoder = EnhancedMusicEncoder(
         use_clap=args.use_clap,
@@ -314,8 +324,8 @@ def train_composition_planner(args):
         num_encoder_layers=3,
         num_decoder_layers=4,
         text_embed_dim=768,
-        num_genres=len(CompositionDataset.GENRES),  # v2: Właściwa liczba genres
-        num_moods=len(CompositionDataset.MOODS),    # v2: Właściwa liczba moods
+        num_genres=len(CompositionDataset.GENRES),  # v2: Proper number of genres
+        num_moods=len(CompositionDataset.MOODS),    # v2: Proper number of moods
     ).to(device)
     
     params = sum(p.numel() for p in model.parameters())
@@ -449,6 +459,11 @@ def train_ldm_v2(args):
     - sample_rate: 32000 (zwiększone z 22050)
     - LoRA dla text encoder (opcjonalnie)
     - End-to-end training z vocoderem (opcjonalnie)
+    
+    v3 Updates:
+    - Integracja z Composition Planner (opcjonalna walidacja struktury)
+    - Composition Planner jest używany głównie w inference
+    - Podczas treningu: używamy ground truth z datasetu
     """
     from models_v2.latent_diffusion import UNetV2, LatentDiffusionV2
     from models_v2.text_encoder import EnhancedMusicEncoder
@@ -501,17 +516,81 @@ def train_ldm_v2(args):
     ).to(device)
     
     vae_ckpt = torch.load(args.vae_checkpoint, map_location=device)
-    vae.load_state_dict(vae_ckpt['model_state_dict'])
+    # Use strict=False to ignore STFT loss buffers from training checkpoint
+    vae.load_state_dict(vae_ckpt['model_state_dict'], strict=False)
     vae.eval()
     for param in vae.parameters():
         param.requires_grad = False
     
-    # Sprawdź czy VAE ma poprawny latent_dim
+    # Check if VAE has correct latent_dim
     vae_latent_dim = vae_ckpt.get('config', {}).get('latent_dim', 8)
     if vae_latent_dim != latent_dim:
         print(f"   ⚠️ Warning: VAE latent_dim={vae_latent_dim}, expected {latent_dim}")
         print(f"   Retrain VAE with --latent_dim {latent_dim}")
     print(f"   VAE loaded and frozen (latent_dim={vae_latent_dim})")
+    
+    # =========================================================================
+    # Latent Scaling - latent normalization for stable diffusion training
+    # =========================================================================
+    # Oblicz scaling factor z checkpointa lub estymuj z danych
+    latent_scale = vae_ckpt.get('config', {}).get('latent_scale', None)
+    
+    if latent_scale is None:
+        # Estimate scaling factor - check std of latents on a sample
+        print("   📊 Estimating latent scale factor...")
+        with torch.no_grad():
+            # Use random audio for estimation
+            test_audio = torch.randn(1, sample_rate * 10).to(device)  # 10s
+            test_out = vae(test_audio)
+            test_z = test_out['z']
+            latent_std = test_z.std().item()
+            # Skaluj aby std ≈ 1.0 (jak w Stable Diffusion)
+            latent_scale = 1.0 / max(latent_std, 0.1)
+        print(f"   Estimated latent_std: {latent_std:.4f}")
+        print(f"   Using latent_scale: {latent_scale:.4f} (target std ≈ 1.0)")
+    else:
+        print(f"   Using saved latent_scale: {latent_scale:.4f}")
+    
+    # Save for later use in inference
+    vae_config_with_scale = vae_ckpt.get('config', {}).copy()
+    vae_config_with_scale['latent_scale'] = latent_scale
+    
+    # =========================================================================
+    # Load Composition Planner (opcjonalnie - do walidacji i inference)
+    # =========================================================================
+    composition_planner = None
+    composition_checkpoint = getattr(args, 'composition_checkpoint', None)
+    
+    if composition_checkpoint and Path(composition_checkpoint).exists():
+        from models_v2.composition_planner import CompositionTransformer
+        
+        print(f"\n📂 Loading Composition Planner from {composition_checkpoint}...")
+        comp_ckpt = torch.load(composition_checkpoint, map_location=device)
+        comp_config = comp_ckpt.get('model_config', {})
+        
+        # Recreate model with saved config
+        composition_planner = CompositionTransformer(
+            vocab_size=15,
+            d_model=comp_config.get('d_model', args.d_model),
+            nhead=4,
+            num_encoder_layers=3,
+            num_decoder_layers=4,
+            text_embed_dim=768,
+            num_genres=48,  # Match CompositionDataset
+            num_moods=30,
+        ).to(device)
+        
+        composition_planner.load_state_dict(comp_ckpt['model_state_dict'])
+        composition_planner.eval()
+        for param in composition_planner.parameters():
+            param.requires_grad = False
+        
+        comp_params = sum(p.numel() for p in composition_planner.parameters())
+        print(f"   Composition Planner loaded ({comp_params/1e6:.1f}M params)")
+        print(f"   ✅ Full pipeline connected: VAE → Composition → LDM")
+    else:
+        print(f"\n📂 Composition Planner: Not loaded (optional)")
+        print(f"   💡 Tip: Use --composition_checkpoint to enable full pipeline")
     
     # Dataset
     print(f"\n📂 Loading dataset...")
@@ -530,6 +609,7 @@ def train_ldm_v2(args):
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=collate_segmented,
+        persistent_workers=args.num_workers > 0,  # Keep workers alive between epochs
     )
     
     print(f"   Dataset size: {len(dataset)}")
@@ -572,7 +652,20 @@ def train_ldm_v2(args):
     else:
         all_params = ldm.parameters()
     
-    optimizer = AdamW(all_params, lr=args.lr)
+    # Auto-adjust learning rate for large models
+    lr = args.lr
+    if args.model_channels >= 768:
+        lr = min(lr, 5e-6)  # XXL: max 5e-6
+        print(f"   📊 Auto-adjusted LR: {args.lr} → {lr} (XXL model)")
+    elif args.model_channels >= 512:
+        lr = min(lr, 1e-5)  # Large: max 1e-5
+        print(f"   📊 Auto-adjusted LR: {args.lr} → {lr} (Large model)")
+    elif args.model_channels >= 320:
+        lr = min(lr, 5e-5)  # Default: max 5e-5
+        if lr != args.lr:
+            print(f"   📊 Auto-adjusted LR: {args.lr} → {lr} (Default model)")
+    
+    optimizer = AdamW(all_params, lr=lr)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     
     # Checkpoint directory
@@ -590,7 +683,7 @@ def train_ldm_v2(args):
         
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{args.epochs}")
         
-        for batch in pbar:
+        for batch_idx, batch in enumerate(pbar):
             # Move to device
             audio = batch['audio'].to(device)
             prompts = batch['prompt']
@@ -641,8 +734,8 @@ def train_ldm_v2(args):
                 key_indices = [KEY_TO_IDX.get(k, 0) for k in keys]  # Default to C
                 key_idx = torch.tensor(key_indices, device=device)
             
-            # 🎤 Voice embeddings (dla voice cloning/conditioning)
-            # v3: Obsługa obu typów embeddings
+            # 🎤 Voice embeddings (for voice cloning/conditioning)
+            # v3: Handling both types of embeddings
             voice_emb = batch.get('voice_embedding')
             if voice_emb is not None:
                 voice_emb = voice_emb.to(device)
@@ -652,7 +745,7 @@ def train_ldm_v2(args):
             if voice_emb_separated is not None:
                 voice_emb_separated = voice_emb_separated.to(device)
             
-            # 🔊 CLAP embeddings (pre-computed) - możemy użyć zamiast text_encoder
+            # 🔊 CLAP embeddings (pre-computed) - can use instead of text_encoder
             clap_audio_emb = batch.get('clap_audio_embedding')
             clap_text_emb = batch.get('clap_text_embedding')
             if clap_audio_emb is not None:
@@ -663,10 +756,10 @@ def train_ldm_v2(args):
                                     clap_text_emb.shape[-1] == 512 and 
                                     clap_text_emb.abs().sum() > 0)
             
-            # 📝 Lyrics per segment (może być użyte do kondycjonowania)
+            # 📝 Lyrics per segment (can be used for conditioning)
             lyrics_texts = batch.get('lyrics_text', [])
             
-            # 🎵 Beat info (może być użyte do sync)
+            # 🎵 Beat info (can be used for sync)
             num_beats = batch.get('num_beats')
             if num_beats is not None:
                 num_beats = num_beats.to(device)
@@ -713,20 +806,34 @@ def train_ldm_v2(args):
                 vae_output = vae(audio)
                 z = vae_output['z']
                 
+                # 🐛 DEBUG: Check VAE output
+                if batch_idx == 0 or torch.isnan(z).any():
+                    print(f"\n🐛 DEBUG VAE output:")
+                    print(f"   audio: shape={audio.shape}, min={audio.min():.4f}, max={audio.max():.4f}, std={audio.std():.4f}")
+                    print(f"   z raw: shape={z.shape}, min={z.min():.4f}, max={z.max():.4f}, std={z.std():.4f}")
+                    print(f"   z has NaN: {torch.isnan(z).any()}, has Inf: {torch.isinf(z).any()}")
+                
+                # ✅ Skaluj latenty do std ≈ 1.0 dla stabilnego treningu diffusion
+                z = z * latent_scale
+                
+                # 🐛 DEBUG: Check scaled z
+                if batch_idx == 0 or torch.isnan(z).any():
+                    print(f"   z scaled: min={z.min():.4f}, max={z.max():.4f}, std={z.std():.4f}")
+                
                 # Context latent
                 if context_audio is not None and context_audio.shape[-1] > 0:
                     context_vae = vae(context_audio)
-                    context_z = context_vae['z']
+                    context_z = context_vae['z'] * latent_scale  # ✅ Scale context too
                 else:
                     context_z = None
             
-            # Text embedding - użyj pre-computed CLAP lub encode runtime
+            # Text embedding - use pre-computed CLAP or encode runtime
             if use_precomputed_clap and not train_text_encoder:
-                # Użyj pre-computed CLAP text embedding (512 dim)
-                # Musimy dopasować do context_dim=768
+                # Use pre-computed CLAP text embedding (512 dim)
+                # Need to match context_dim=768
                 clap_text_emb = clap_text_emb.to(device)
-                # Projection 512 → 768 (lub użyj bezpośrednio jeśli model to obsługuje)
-                # Na razie używamy text_encoder jako fallback
+                # Projection 512 → 768 (or use directly if model supports it)
+                # For now using text_encoder as fallback
                 with torch.no_grad():
                     text_embed = text_encoder(
                         prompts,
@@ -753,6 +860,12 @@ def train_ldm_v2(args):
                         energies,
                     )
             
+            # 🐛 DEBUG: Check text embedding
+            if batch_idx == 0 or torch.isnan(text_embed).any():
+                print(f"\n🐛 DEBUG text_embed:")
+                print(f"   shape={text_embed.shape}, min={text_embed.min():.4f}, max={text_embed.max():.4f}, std={text_embed.std():.4f}")
+                print(f"   has NaN: {torch.isnan(text_embed).any()}, has Inf: {torch.isinf(text_embed).any()}")
+            
             # Random timesteps
             B = z.shape[0]
             t = torch.randint(0, ldm.num_timesteps, (B,), device=device)
@@ -760,9 +873,9 @@ def train_ldm_v2(args):
             # Forward
             optimizer.zero_grad()
             
-            # 🎤 Przekaż voice_embedding do modelu!
-            # 🎵 v2: Przekaż wszystkie nowe kondycjonowania (CLAP, beat, chord, phonemes)
-            # 🎤 v3: Oba voice embeddings (resemblyzer + ECAPA-TDNN)
+            # 🎤 Pass voice_embedding to model!
+            # 🎵 v2: Pass all new conditioning (CLAP, beat, chord, phonemes)
+            # 🎤 v3: Both voice embeddings (resemblyzer + ECAPA-TDNN)
             # 🎵 v3: F0/pitch conditioning
             # 🎵 v3: Key, loudness, has_vocals, sentiment, genre, artist conditioning
             loss, phoneme_durations = ldm.p_losses(
@@ -798,14 +911,37 @@ def train_ldm_v2(args):
                 vibrato_extent=vibrato_extent,              # ✅ v3.1: Vibrato extent (fraction)
                 breath_positions=breath_positions,          # ✅ v3.1: Breath positions (list)
                 phoneme_timestamps=phoneme_timestamps,      # ✅ v3.1: Phoneme timing (list)
-                # v3: Phoneme duration targets (opcjonalnie - jeśli dostępne w datasecie)
+                # v3: Phoneme duration targets (optional - if available in dataset)
                 # target_phoneme_durations=batch.get('phoneme_durations'),
             )
             # ℹ️ Phoneme duration loss jest teraz wbudowany w p_losses()
             # (use_phoneme_duration_loss=True w LatentDiffusionV2)
             
+            # 🐛 DEBUG: Check loss
+            if batch_idx == 0 or torch.isnan(loss):
+                print(f"\n🐛 DEBUG loss:")
+                print(f"   loss={loss.item():.6f}, t={t.item()}")
+                print(f"   loss has NaN: {torch.isnan(loss)}, has Inf: {torch.isinf(loss)}")
+            
             # Backward
             loss.backward()
+            
+            # 🐛 DEBUG: Check gradients
+            if batch_idx == 0 or torch.isnan(loss):
+                grad_norms = []
+                nan_params = []
+                for name, p in ldm.named_parameters():
+                    if p.grad is not None:
+                        grad_norm = p.grad.norm().item()
+                        grad_norms.append(grad_norm)
+                        if torch.isnan(p.grad).any():
+                            nan_params.append(name)
+                if grad_norms:
+                    print(f"\n🐛 DEBUG gradients:")
+                    print(f"   grad norms: min={min(grad_norms):.4f}, max={max(grad_norms):.4f}, mean={sum(grad_norms)/len(grad_norms):.4f}")
+                    if nan_params:
+                        print(f"   ⚠️ NaN gradients in: {nan_params[:5]}...")
+            
             torch.nn.utils.clip_grad_norm_(ldm.parameters(), 1.0)
             optimizer.step()
             
@@ -827,6 +963,16 @@ def train_ldm_v2(args):
             'use_voice_stream': True,
             'use_dual_voice': True,
             'sample_rate': sample_rate,
+            'latent_scale': latent_scale,  # ✅ Zapisz latent scale dla inference
+        }
+        
+        # Pipeline config (save associations between components)
+        pipeline_config = {
+            'vae_checkpoint': str(args.vae_checkpoint),
+            'composition_checkpoint': str(composition_checkpoint) if composition_checkpoint else None,
+            'd_model': args.d_model,
+            'has_composition_planner': composition_planner is not None,
+            'latent_scale': latent_scale,  # ✅ Also here for redundancy
         }
         
         # Save checkpoint
@@ -837,7 +983,8 @@ def train_ldm_v2(args):
                 'model_state_dict': ldm.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': avg_loss,
-                'config': ldm_config,  # ✅ Zapisz konfigurację
+                'config': ldm_config,  # ✅ Save LDM configuration
+                'pipeline_config': pipeline_config,  # ✅ Save full pipeline configuration
             }, checkpoint_dir / 'ldm_v2_best.pt')
             print(f"   ✅ Saved best model (loss: {best_loss:.4f})")
         
@@ -846,17 +993,34 @@ def train_ldm_v2(args):
                 'epoch': epoch,
                 'model_state_dict': ldm.state_dict(),
                 'loss': avg_loss,
-                'config': ldm_config,  # ✅ Zapisz konfigurację
+                'config': ldm_config,  # ✅ Save configuration
+                'pipeline_config': pipeline_config,  # ✅ Save full pipeline configuration
             }, checkpoint_dir / f'ldm_v2_epoch_{epoch+1}.pt')
     
     print(f"\n✅ Training complete! Best loss: {best_loss:.4f}")
+    
+    # Podsumowanie pipeline
+    print(f"\n" + "="*60)
+    print("📊 Pipeline Summary:")
+    print("="*60)
+    print(f"   VAE checkpoint: {args.vae_checkpoint}")
+    print(f"   VAE latent_dim: {latent_dim}")
+    print(f"   VAE latent_scale: {latent_scale:.4f}")
+    if composition_checkpoint:
+        print(f"   Composition Planner: {composition_checkpoint}")
+    else:
+        print(f"   Composition Planner: Not used (add --composition_checkpoint for full pipeline)")
+    print(f"   LDM checkpoint: {checkpoint_dir}/ldm_v2_best.pt")
+    print(f"   LDM model_channels: {args.model_channels}")
+    print(f"   LDM num_timesteps: {num_timesteps}")
+    print("="*60)
 
 
 def annotate_segments(args):
-    """Anotacja segmentów (Faza 0)"""
+    """Segment annotation (Phase 0)"""
     
     if args.full_pipeline:
-        # Pełny pipeline: ekstrakcja cech + segmenty + prompty + wokale
+        # Full pipeline: feature extraction + segments + prompts + vocals
         from build_dataset_v2 import DatasetBuilderV2
         
         print("="*60)
@@ -923,7 +1087,9 @@ def main():
     parser.add_argument('--output', type=str, default='./data_v2/segments.json',
                         help='Output path for annotations')
     parser.add_argument('--vae_checkpoint', type=str, default='./checkpoints/vae_best.pt',
-                        help='Path to VAE checkpoint')
+                        help='Phase 3: Path to VAE checkpoint')
+    parser.add_argument('--composition_checkpoint', type=str, default=None,
+                        help='Phase 3: Path to Composition Planner checkpoint (optional, enables full pipeline)')
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints_v2',
                         help='Directory for saving checkpoints')
     
@@ -971,6 +1137,12 @@ def main():
                         help='Phase 0: Whisper model size')
     
     args = parser.parse_args()
+    
+    # Fix semaphore leak on macOS - reduce workers or use spawn
+    if platform.system() == 'Darwin' and args.num_workers > 0:
+        # macOS has issues with fork and semaphores
+        args.num_workers = min(args.num_workers, 2)
+        print(f"⚠️  macOS detected: reduced num_workers to {args.num_workers}")
     
     # Create checkpoint directory
     Path(args.checkpoint_dir).mkdir(exist_ok=True)

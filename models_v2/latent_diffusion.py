@@ -41,7 +41,7 @@ from torch.utils.checkpoint import checkpoint
 
 
 def timestep_embedding(timesteps: torch.Tensor, dim: int, max_period: int = 10000) -> torch.Tensor:
-    """Sinusoidalne embeddingi dla timestepów"""
+    """Sinusoidal embeddings for timesteps"""
     half = dim // 2
     freqs = torch.exp(
         -math.log(max_period) * torch.arange(half, device=timesteps.device) / half
@@ -177,7 +177,7 @@ class ClapProjection(nn.Module):
         )
         
         if mode == 'fused':
-            # Cross-attention fusion między audio i text CLAP
+            # Cross-attention fusion between audio and text CLAP
             self.fusion_attn = nn.MultiheadAttention(
                 embed_dim=output_dim,
                 num_heads=8,
@@ -206,7 +206,7 @@ class ClapProjection(nn.Module):
             return self.text_proj(clap_text)
         
         elif self.mode == 'fused':
-            # Jeśli mamy oba, użyj fusion
+            # If we have both, use fusion
             if clap_audio is not None and clap_text is not None:
                 audio_emb = self.audio_proj(clap_audio)  # [B, 768]
                 text_emb = self.text_proj(clap_text)     # [B, 768]
@@ -259,7 +259,7 @@ class BeatEmbedding(nn.Module):
     ):
         super().__init__()
         
-        # Embedding dla liczby uderzeń
+        # Embedding for number of beats
         self.num_beats_embed = nn.Embedding(max_beats + 1, output_dim // 2)
         
         # Embedding dla time signature
@@ -344,7 +344,7 @@ class ChordEmbedding(nn.Module):
     - + 'N' (no chord) i 'X' (unknown)
     """
     
-    # Mapowanie akordów na indeksy
+    # Mapping chords to indices
     CHORD_ROOTS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
     CHORD_TYPES = ['', 'm', '7', 'm7', 'maj7', 'dim', 'aug', 'sus2', 'sus4', 'add9']
     
@@ -828,7 +828,7 @@ class PhonemeEncoder(nn.Module):
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.SiLU(),
             nn.Linear(hidden_dim // 2, 1),
-            nn.Softplus(),  # Duracje muszą być dodatnie
+            nn.Softplus(),  # Durations must be positive
         )
     
     def tokenize_ipa(self, ipa_string: str) -> List[int]:
@@ -872,13 +872,22 @@ class PhonemeEncoder(nn.Module):
         # Tokenize all phoneme strings
         all_tokens = []
         max_len = 0
+        empty_sample_mask = []  # Track which samples have empty phonemes
+        
         for ipa in phonemes_ipa:
             tokens = self.tokenize_ipa(ipa if ipa else "")
             tokens = tokens[:self.max_phonemes]
             all_tokens.append(tokens)
             max_len = max(max_len, len(tokens))
+            empty_sample_mask.append(len(tokens) == 0)
         
+        empty_sample_mask = torch.tensor(empty_sample_mask, device=device, dtype=torch.bool)  # [B]
         max_len = max(max_len, 1)  # At least 1
+        
+        # 🛡️ Safety check: if all sequences are empty, return zeros
+        if empty_sample_mask.all():
+            return (torch.zeros(B, self.output_dim, device=device),
+                    torch.zeros(B, 1, device=device))
         
         # Pad to same length
         padded_tokens = torch.zeros(B, max_len, device=device, dtype=torch.long)
@@ -888,6 +897,11 @@ class PhonemeEncoder(nn.Module):
             if len(tokens) > 0:
                 padded_tokens[i, :len(tokens)] = torch.tensor(tokens, device=device)
                 attention_mask[i, :len(tokens)] = True
+            else:
+                # 🛡️ For empty sequences: add a single padding token with attention
+                # This prevents NaN in transformer when entire row is masked
+                padded_tokens[i, 0] = 0  # <pad> token
+                attention_mask[i, 0] = True  # Attend to at least one position
         
         # Phoneme embeddings
         phoneme_emb = self.phoneme_embed(padded_tokens)  # [B, seq, hidden]
@@ -915,12 +929,17 @@ class PhonemeEncoder(nn.Module):
         # Aggregate features (attention-weighted mean)
         # Use duration as attention weights
         duration_weights = duration_pred * attention_mask.float()
-        duration_weights = duration_weights / (duration_weights.sum(dim=1, keepdim=True) + 1e-8)
+        weight_sum = duration_weights.sum(dim=1, keepdim=True)
+        weight_sum = torch.clamp(weight_sum, min=1e-6)  # Prevent division by very small values
+        duration_weights = duration_weights / weight_sum
         
         aggregated = torch.einsum('bs,bsh->bh', duration_weights, encoded)  # [B, hidden]
         
         # Project to output dim
         output_features = self.output_proj(aggregated)  # [B, output_dim]
+        
+        # 🛡️ Zero out features for empty phoneme samples (they should not contribute)
+        output_features = output_features * (~empty_sample_mask).float().unsqueeze(-1)
         
         return output_features, duration_pred
 
@@ -1706,7 +1725,12 @@ class SectionConditioningModule(nn.Module):
         
         # 🎤 Phoneme conditioning (v2)
         phoneme_durations = None
-        if self.use_phonemes and phonemes_ipa is not None and voice_embedding is not None:
+        # Check if we have actual phoneme data (not just empty strings)
+        has_valid_phonemes = (phonemes_ipa is not None and 
+                              voice_embedding is not None and
+                              any(p and len(p.strip()) > 0 for p in phonemes_ipa))
+        
+        if self.use_phonemes and has_valid_phonemes:
             phoneme_features, phoneme_durations = self.phoneme_encoder(
                 phonemes_ipa=phonemes_ipa,
                 voice_embedding=voice_embedding,
@@ -1766,7 +1790,21 @@ class SectionConditioningModule(nn.Module):
         # Combine all
         combined = torch.cat(cond_parts, dim=-1)
         
-        return self.fusion(combined), phoneme_durations
+        # 🐛 DEBUG: Check for NaN in conditioning parts
+        for i, part in enumerate(cond_parts):
+            if torch.isnan(part).any():
+                print(f"⚠️ NaN in cond_part[{i}]! shape={part.shape}")
+        
+        if torch.isnan(combined).any():
+            print(f"⚠️ NaN in combined conditioning before fusion!")
+        
+        result = self.fusion(combined)
+        
+        if torch.isnan(result).any():
+            print(f"⚠️ NaN in fusion output!")
+            print(f"   combined stats: min={combined.min():.4f}, max={combined.max():.4f}, std={combined.std():.4f}")
+        
+        return result, phoneme_durations
 
 
 class CrossAttention(nn.Module):
@@ -1785,7 +1823,7 @@ class CrossAttention(nn.Module):
         query_dim: int,
         context_dim: int = None,
         heads: int = 8,
-        num_kv_heads: int = None,  # v3: GQA - jeśli None, użyj heads (MHA)
+        num_kv_heads: int = None,  # v3: GQA - if None, use heads (MHA)
         dim_head: int = 64,
         use_rope: bool = False,    # v3: RoPE dla self-attention
         max_seq_len: int = 4096,
@@ -1905,9 +1943,9 @@ class TransformerBlock(nn.Module):
     Blok transformera z self-attention i cross-attention.
     
     v3 Updates:
-    - SwiGLU zamiast GELU (lepsza jakość)
-    - GQA (Grouped Query Attention) - mniejszy KV-cache
-    - RoPE (Rotary Position Embedding) dla self-attention
+    - SwiGLU instead of GELU (better quality)
+    - GQA (Grouped Query Attention) - smaller KV-cache
+    - RoPE (Rotary Position Embedding) for self-attention
     """
     
     def __init__(
@@ -1915,16 +1953,16 @@ class TransformerBlock(nn.Module):
         dim: int,
         context_dim: int = None,
         heads: int = 8,
-        num_kv_heads: int = None,  # v3: GQA - jeśli None, użyj heads//4
+        num_kv_heads: int = None,  # v3: GQA - if None, use heads//4
         dim_head: int = 64,
         use_swiglu: bool = True,
-        use_gqa: bool = True,    # v3: GQA domyślnie włączone
-        use_rope: bool = True,   # v3: RoPE dla self-attention
+        use_gqa: bool = True,    # v3: GQA enabled by default
+        use_rope: bool = True,   # v3: RoPE for self-attention
         max_seq_len: int = 4096,
     ):
         super().__init__()
         
-        # GQA config: domyślnie 4× mniej KV heads
+        # GQA config: default 4× fewer KV heads
         if use_gqa and num_kv_heads is None:
             num_kv_heads = max(1, heads // 4)
         elif not use_gqa:
@@ -2130,7 +2168,7 @@ class VoiceStreamAttention(nn.Module):
         )
         
         # Learnable voice presence gate
-        # Model uczy się gdzie wokal powinien być obecny
+        # Model learns where vocal should be present
         self.voice_gate = nn.Sequential(
             nn.Linear(voice_dim + channels, channels),
             nn.Sigmoid(),
@@ -2172,7 +2210,7 @@ class VoiceStreamAttention(nn.Module):
         attended = self.out_proj(attended)
         
         # Compute voice presence gate
-        # Global feature + voice -> gate dla każdej pozycji
+        # Global feature + voice -> gate for each position
         global_feat = x_flat.mean(dim=1)  # [B, C]
         gate_input = torch.cat([voice_emb, global_feat], dim=-1)  # [B, voice_dim + C]
         gate = self.voice_gate(gate_input)  # [B, C]
@@ -2208,9 +2246,9 @@ class UNetV2(nn.Module):
     
     def __init__(
         self,
-        in_channels: int = 128,          # v2: 128 zamiast 8
-        out_channels: int = 128,         # v2: 128 zamiast 8
-        model_channels: int = 320,       # v2: zwiększone dla 128D latent
+        in_channels: int = 128,          # v2: 128 instead of 8
+        out_channels: int = 128,         # v2: 128 instead of 8
+        model_channels: int = 320,       # v2: increased for 128D latent
         channel_mult: List[int] = [1, 2, 4, 4],
         num_res_blocks: int = 2,
         attention_resolutions: List[int] = [2, 4],
@@ -2283,7 +2321,7 @@ class UNetV2(nn.Module):
         if use_context_fusion:
             self.context_fusion = ContextFusion(model_channels)
         
-        # 🎤 Voice Stream Attention modules - jeden dla każdego poziomu
+        # 🎤 Voice Stream Attention modules - one for each level
         self.voice_stream_modules = nn.ModuleDict()
         
         # Downsampling
@@ -2307,7 +2345,7 @@ class UNetV2(nn.Module):
                 self.voice_stream_modules[f'down_{level}'] = VoiceStreamAttention(
                     channels=ch,
                     voice_dim=voice_embedding_dim,
-                    num_heads=num_heads // 2,  # Mniej głów dla voice
+                    num_heads=num_heads // 2,  # Fewer heads for voice
                 )
             
             if level < len(channel_mult) - 1:
@@ -2440,7 +2478,22 @@ class UNetV2(nn.Module):
         """
         # Time embedding
         t_emb = timestep_embedding(t, self.model_channels)
+        
+        # 🐛 DEBUG: Check time embedding
+        if torch.isnan(t_emb).any():
+            print(f"⚠️ NaN in t_emb after timestep_embedding! t={t.tolist()}")
+            print(f"   t_emb stats: min={t_emb.min():.4f}, max={t_emb.max():.4f}")
+        
         t_emb = self.time_embed(t_emb)
+        
+        # 🐛 DEBUG: Check after time_embed MLP
+        if torch.isnan(t_emb).any():
+            print(f"⚠️ NaN in t_emb after time_embed MLP! t={t.tolist()}")
+            # Check weight stats
+            for i, layer in enumerate(self.time_embed):
+                if hasattr(layer, 'weight'):
+                    w = layer.weight
+                    print(f"   time_embed[{i}] weight: min={w.min():.4f}, max={w.max():.4f}, has_nan={torch.isnan(w).any()}")
         
         # Section conditioning
         # Handle 3D text embedding
@@ -2495,8 +2548,19 @@ class UNetV2(nn.Module):
             segment_duration=segment_duration,
         )
         
+        # 🐛 DEBUG: Check section conditioning
+        if torch.isnan(section_cond).any():
+            print(f"⚠️ NaN in section_cond!")
+            print(f"   section_cond stats: min={section_cond.min():.4f}, max={section_cond.max():.4f}")
+        
         # Combine time and section conditioning
         cond = t_emb + section_cond
+        
+        # 🐛 DEBUG: Check combined conditioning
+        if torch.isnan(cond).any():
+            print(f"⚠️ NaN in cond after t_emb + section_cond!")
+            print(f"   t_emb has NaN: {torch.isnan(t_emb).any()}")
+            print(f"   section_cond has NaN: {torch.isnan(section_cond).any()}")
         
         # Add voice embedding if provided (global conditioning)
         if fused_voice_emb is not None:
@@ -2541,7 +2605,7 @@ class UNetV2(nn.Module):
                     h = layer(h)
             hs.append(h)
             
-            # 🎤 Apply Voice Stream po każdym level (po ostatnim bloku przed downsample)
+            # 🎤 Apply Voice Stream after each level (after last block before downsample)
             if self.use_voice_stream and voice_emb is not None:
                 # Check if this is the last block before downsample in current level
                 vs_key = f'down_{level_idx}'
@@ -2568,7 +2632,7 @@ class UNetV2(nn.Module):
             h = self.mid_block1(h, cond)
             h = self.mid_attn(h, text_context)
         
-        # 🎤 Voice Stream w middle block (używa fused embedding)
+        # 🎤 Voice Stream in middle block (uses fused embedding)
         if self.use_voice_stream and fused_voice_emb is not None:
             if 'mid' in self.voice_stream_modules:
                 h = self.voice_stream_modules['mid'](h, fused_voice_emb)
@@ -2600,13 +2664,13 @@ class UNetV2(nn.Module):
                     else:
                         h = layer(h, text_context)
                     
-                    # 🎤 Apply Voice Stream po każdym SpatialTransformer w up path (używa fused embedding)
+                    # 🎤 Apply Voice Stream after each SpatialTransformer in up path (uses fused embedding)
                     if self.use_voice_stream and fused_voice_emb is not None:
                         vs_key = f'up_{current_level}'
                         if vs_key in self.voice_stream_modules:
                             h = self.voice_stream_modules[vs_key](h, fused_voice_emb)
                 else:
-                    # Upsample layer - zmieniamy level
+                    # Upsample layer - change level
                     h = layer(h)
                     current_level -= 1
         
@@ -2640,10 +2704,10 @@ class LatentDiffusionV2(nn.Module):
     def __init__(
         self,
         unet: UNetV2,
-        num_timesteps: int = 200,     # v2: 200 zamiast 1000
-        beta_start: float = 0.00085,  # v2: dostosowane do mniejszej liczby kroków
-        beta_end: float = 0.012,      # v2: dostosowane
-        beta_schedule: str = "scaled_linear",  # v2: lepszy schedule
+        num_timesteps: int = 200,     # v2: 200 instead of 1000
+        beta_start: float = 0.00085,  # v2: adjusted for fewer steps
+        beta_end: float = 0.012,      # v2: adjusted
+        beta_schedule: str = "scaled_linear",  # v2: better schedule
         # v3: CFG (Classifier-Free Guidance)
         cfg_dropout_prob: float = 0.1,  # Probability of dropping conditioning during training
         # v3: Phoneme Duration Loss
@@ -2658,11 +2722,11 @@ class LatentDiffusionV2(nn.Module):
         self.use_phoneme_duration_loss = use_phoneme_duration_loss
         self.phoneme_duration_weight = phoneme_duration_weight
         
-        # Noise schedule - wybór między linear i scaled_linear
+        # Noise schedule - choice between linear and scaled_linear
         if beta_schedule == "linear":
             betas = torch.linspace(beta_start, beta_end, num_timesteps)
         elif beta_schedule == "scaled_linear":
-            # Scaled linear - lepiej działa dla mniejszej liczby kroków
+            # Scaled linear - works better for fewer steps
             betas = torch.linspace(beta_start ** 0.5, beta_end ** 0.5, num_timesteps) ** 2
         elif beta_schedule == "cosine":
             # Cosine schedule (jak w improved DDPM)
@@ -2809,6 +2873,13 @@ class LatentDiffusionV2(nn.Module):
                              for i, a in enumerate(artist)]
         
         x_noisy = self.q_sample(x0, t, noise)
+        
+        # 🐛 DEBUG: Check inputs before UNet
+        if torch.isnan(x_noisy).any():
+            print(f"⚠️ NaN in x_noisy before UNet!")
+        if torch.isnan(text_embed).any():
+            print(f"⚠️ NaN in text_embed before UNet!")
+        
         predicted_noise, phoneme_durations = self.unet(
             x_noisy, t, text_embed,
             section_type=section_type,
@@ -2844,6 +2915,12 @@ class LatentDiffusionV2(nn.Module):
             phoneme_timestamps=phoneme_timestamps,
             segment_duration=segment_duration,
         )
+        
+        # 🐛 DEBUG: Check UNet output
+        if torch.isnan(predicted_noise).any():
+            print(f"⚠️ NaN in predicted_noise after UNet! t={t.tolist()}")
+            # Print which part of UNet might have caused it
+            print(f"   x_noisy stats: min={x_noisy.min():.4f}, max={x_noisy.max():.4f}, std={x_noisy.std():.4f}")
         
         # ============================================
         # Main loss: MSE on noise
@@ -3368,12 +3445,12 @@ def create_unet_large(**kwargs) -> UNetV2:
     defaults = dict(
         in_channels=128,
         out_channels=128,
-        model_channels=384,  # 384 dzieli się przez 12
+        model_channels=384,  # 384 is divisible by 12
         channel_mult=[1, 2, 4, 4],
         num_res_blocks=3,
         attention_resolutions=[2, 4],
         num_heads=12,
-        use_checkpoint=True,  # Potrzebne dla tak dużego modelu
+        use_checkpoint=True,  # Needed for such large model
     )
     defaults.update(kwargs)
     return UNetV2(**defaults)

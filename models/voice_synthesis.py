@@ -22,24 +22,24 @@ Pipeline dla trybu 2:
 
 Obsługiwane backendy:
 - Coqui TTS (XTTS v2) - open source, lokalne
-- ElevenLabs - API, bardzo wysoka jakość
+- ElevenLabs - API, very high quality
 - Bark - open source, Facebook
-- RVC (Retrieval Voice Conversion) - konwersja głosu
+- RVC (Retrieval Voice Conversion) - voice conversion
 
-Przykład użycia:
+Usage example:
     from models.voice_synthesis import VoiceSynthesizer, VoiceExtractorFromSong
     
-    # Tryb 1: Własny głos
+    # Mode 1: Your own voice
     synth = VoiceSynthesizer(backend="coqui")
-    synth.register_voice("moj_glos", "nagranie.wav")
+    synth.register_voice("my_voice", "recording.wav")
     
-    # Tryb 2: Wyekstrahuj głos z utworu i sklonuj
+    # Mode 2: Extract voice from song and clone
     extractor = VoiceExtractorFromSong()
-    vocals_path = extractor.extract_vocals("piosenka_artysty.mp3")
-    synth.register_voice("artysta_x", vocals_path)
+    vocals_path = extractor.extract_vocals("artist_song.mp3")
+    synth.register_voice("artist_x", vocals_path)
     
-    # Wygeneruj śpiew
-    audio = synth.synthesize(text="Nowy tekst", voice="artysta_x")
+    # Generate singing
+    audio = synth.synthesize(text="New text", voice="artist_x")
 """
 
 import torch
@@ -55,7 +55,7 @@ import os
 
 @dataclass
 class RegisteredVoice:
-    """Zarejestrowany głos użytkownika."""
+    """Registered user voice."""
     name: str
     reference_audio_path: str
     embedding: Optional[List[float]] = None
@@ -67,17 +67,17 @@ class RegisteredVoice:
 
 class VoiceExtractorFromSong:
     """
-    Ekstrahuje wokal z utworu muzycznego do klonowania głosu.
+    Extracts vocals from a music track for voice cloning.
     
     Pipeline:
-    1. Demucs/Spleeter separuje wokal od instrumentów
-    2. Opcjonalnie: diarization jeśli wielu wokalistów
-    3. Zwraca czysty wokal do voice cloningu
+    1. Demucs/Spleeter separates vocals from instruments
+    2. Optionally: diarization if multiple vocalists
+    3. Returns clean vocals for voice cloning
     
-    Użycie:
+    Usage:
         extractor = VoiceExtractorFromSong()
         vocals = extractor.extract_vocals("song.mp3")
-        # vocals to ścieżka do pliku z samym wokalem
+        # vocals is a path to file with vocals only
     """
     
     def __init__(
@@ -90,7 +90,7 @@ class VoiceExtractorFromSong:
         Args:
             separation_model: "htdemucs" (best), "demucs", "spleeter"
             device: cpu/cuda
-            output_dir: gdzie zapisać wyekstrahowany wokal
+            output_dir: where to save extracted vocals
         """
         self.separation_model = separation_model
         self.device = device
@@ -458,7 +458,7 @@ class VoiceSynthesizer:
             raise ValueError("RVC requires model_path to .pth file")
         
         try:
-            # RVC ma różne implementacje, używamy popularnej
+            # RVC has various implementations, we use the popular one
             print(f"🎤 Loading RVC model from {self.model_path}...")
             # Placeholder - RVC wymaga specyficznej konfiguracji
             self._model = {"model_path": self.model_path}
@@ -474,20 +474,20 @@ class VoiceSynthesizer:
         source_type: str = "recording",
     ) -> RegisteredVoice:
         """
-        Rejestruje głos użytkownika do późniejszego użycia.
+        Registers user voice for later use.
         
         Args:
-            name: unikalna nazwa dla tego głosu (np. "moj_glos")
-            reference_audio: ścieżka do nagrania (10-30s, czyste audio)
-            description: opcjonalny opis
-            source_type: "recording" (własne nagranie) lub "extracted_from_song"
+            name: unique name for this voice (e.g. "my_voice")
+            reference_audio: path to recording (10-30s, clean audio)
+            description: optional description
+            source_type: "recording" (own recording) or "extracted_from_song"
             
         Returns:
             RegisteredVoice object
             
-        Przykład:
-            synth.register_voice("adam", "nagranie_adama.wav")
-            synth.register_voice("kasia", "nagranie_kasi.mp3", "Kasia - alto")
+        Example:
+            synth.register_voice("adam", "adam_recording.wav")
+            synth.register_voice("kate", "kate_recording.mp3", "Kate - alto")
         """
         self._init_backend()
         
@@ -507,8 +507,8 @@ class VoiceSynthesizer:
         )
         
         if self.backend == "coqui":
-            # XTTS używa reference audio bezpośrednio
-            # Możemy też wyekstrahować embedding dla cache'a
+            # XTTS uses reference audio directly
+            # We can also extract embedding for cache
             voice.embedding = self._extract_voice_embedding(reference_audio)
         
         elif self.backend == "elevenlabs":
@@ -516,11 +516,11 @@ class VoiceSynthesizer:
             voice.speaker_id = self._upload_to_elevenlabs(name, reference_audio, description)
         
         elif self.backend == "bark":
-            # Bark używa speaker embeddings
+            # Bark uses speaker embeddings
             voice.embedding = self._extract_bark_embedding(reference_audio)
         
         elif self.backend == "rvc":
-            # RVC potrzebuje feature extraction
+            # RVC needs feature extraction
             voice.embedding = self._extract_rvc_features(reference_audio)
         
         self.voices[name] = voice
@@ -552,22 +552,22 @@ class VoiceSynthesizer:
             name: nazwa dla tego głosu (np. "freddie_mercury")
             song_path: ścieżka do utworu z wokalem
             separation_model: "htdemucs" (najlepszy), "demucs", "spleeter"
-            description: opcjonalny opis
+            description: optional description
             
         Returns:
             RegisteredVoice object
             
-        Przykład:
-            # Wyekstrahuj głos z piosenki Queen
+        Example:
+            # Extract voice from Queen song
             synth.register_voice_from_song(
                 "freddie",
                 "queen_bohemian_rhapsody.mp3",
                 description="Freddie Mercury vocal"
             )
             
-            # Teraz możesz śpiewać "jak Freddie"
+            # Now you can sing "like Freddie"
             audio = synth.synthesize(
-                text="Nowy tekst do zaśpiewania",
+                text="New text to sing",
                 voice="freddie"
             )
         """
@@ -660,7 +660,7 @@ class VoiceSynthesizer:
     
     def _extract_bark_embedding(self, audio_path: str) -> List[float]:
         """Extract Bark speaker embedding."""
-        # Bark używa własnego formatu - placeholder
+        # Bark uses its own format - placeholder
         return []
     
     def _extract_rvc_features(self, audio_path: str) -> List[float]:
@@ -678,15 +678,15 @@ class VoiceSynthesizer:
         output_path: Optional[str] = None,
     ) -> torch.Tensor:
         """
-        Syntezuje mowę/śpiew używając zarejestrowanego głosu.
+        Synthesizes speech/singing using registered voice.
         
         Args:
-            text: tekst do wypowiedzenia/zaśpiewania
-            voice: nazwa zarejestrowanego głosu
-            language: język ("pl", "en", "es", etc.)
-            speed: prędkość mówienia (0.5-2.0)
-            pitch_shift: przesunięcie pitch w półtonach
-            output_path: opcjonalna ścieżka do zapisania
+            text: text to speak/sing
+            voice: name of registered voice
+            language: language ("pl", "en", "es", etc.)
+            speed: speaking speed (0.5-2.0)
+            pitch_shift: pitch shift in semitones
+            output_path: optional path to save
             
         Returns:
             audio tensor [samples] @ sample_rate
@@ -748,7 +748,7 @@ class VoiceSynthesizer:
                 speed=speed,
             )
         
-        # Coqui TTS może zwrócić listę lub np.ndarray
+        # Coqui TTS may return list or np.ndarray
         import numpy as np
         if isinstance(audio_np, list):
             audio_np = np.array(audio_np, dtype=np.float32)
@@ -844,11 +844,11 @@ class VoiceSynthesizer:
         print(f"   ✓ Saved to {path}")
     
     def list_voices(self) -> List[str]:
-        """Lista zarejestrowanych głosów."""
+        """List of registered voices."""
         return list(self.voices.keys())
     
     def save_voices(self, path: str):
-        """Zapisuje zarejestrowane głosy do pliku."""
+        """Saves registered voices to file."""
         voices_data = {}
         for name, voice in self.voices.items():
             voices_data[name] = {
@@ -864,7 +864,7 @@ class VoiceSynthesizer:
         print(f"💾 Saved {len(voices_data)} voices to {path}")
     
     def load_voices(self, path: str):
-        """Wczytuje zarejestrowane głosy z pliku."""
+        """Loads registered voices from file."""
         with open(path, 'r', encoding='utf-8') as f:
             voices_data = json.load(f)
         
@@ -883,22 +883,22 @@ class VoiceSynthesizer:
 
 class SingingVoiceSynthesizer(VoiceSynthesizer):
     """
-    Wyspecjalizowana synteza ŚPIEWU (nie tylko mowy).
+    Specialized SINGING synthesis (not just speech).
     
-    Używa modeli lepiej przystosowanych do śpiewania:
-    - Kontola pitch/melodii
-    - Timing synchronizowany z muzyką
-    - Lepsze trzymanie nut
+    Uses models better adapted for singing:
+    - Pitch/melody control
+    - Timing synchronized with music
+    - Better note holding
     
-    Backendy:
-    - diff_singer: DiffSinger (SOTA dla singing)
+    Backends:
+    - diff_singer: DiffSinger (SOTA for singing)
     - so_vits_svc: So-VITS-SVC (singing voice conversion)
-    - coqui: XTTS (bardziej mówienie niż śpiew)
+    - coqui: XTTS (more speech than singing)
     """
     
     def __init__(
         self,
-        backend: str = "coqui",  # diff_singer lub so_vits_svc dla lepszego śpiewu
+        backend: str = "coqui",  # diff_singer or so_vits_svc for better singing
         **kwargs
     ):
         super().__init__(backend=backend, **kwargs)
@@ -915,7 +915,7 @@ class SingingVoiceSynthesizer(VoiceSynthesizer):
         output_path: Optional[str] = None,
     ) -> torch.Tensor:
         """
-        Syntezuje ŚPIEW z tekstem i melodią.
+        Synthesizes SINGING with text and melody.
         
         Args:
             lyrics: tekst do zaśpiewania (z timing markers opcjonalnie)

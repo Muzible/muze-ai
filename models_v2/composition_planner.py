@@ -64,9 +64,11 @@ SECTION_TO_TOKEN = {
     'buildup': SectionTypeToken.BUILDUP,
     'drop': SectionTypeToken.DROP,
     'outro': SectionTypeToken.OUTRO,
+    # Fallback dla nieznanego (mapuj na verse jako bezpieczny default)
+    'unknown': SectionTypeToken.VERSE,
 }
 
-TOKEN_TO_SECTION = {v: k for k, v in SECTION_TO_TOKEN.items()}
+TOKEN_TO_SECTION = {v: k for k, v in SECTION_TO_TOKEN.items() if k != 'unknown'}
 
 
 @dataclass
@@ -81,14 +83,14 @@ class SectionPlan:
     position_start: float    # 0-1 (pozycja w utworze)
     position_end: float      # 0-1
     
-    # Opcjonalne
+    # Optional
     transition_type: str = "crossfade"  # "cut", "crossfade", "buildup"
     prompt_hint: str = ""
 
 
 @dataclass
 class CompositionPlan:
-    """Pełny plan kompozycji utworu"""
+    """Full composition plan for a track"""
     total_duration: float
     global_tempo: float
     global_key: str
@@ -101,7 +103,7 @@ class CompositionPlan:
     generation_params: Dict = field(default_factory=dict)
     
     def to_conditioning_sequence(self) -> List[Dict]:
-        """Konwertuje plan na sekwencję kondycjonowania dla LDM"""
+        """Converts plan to conditioning sequence for LDM"""
         return [
             {
                 'section_type': s.section_type,
@@ -137,30 +139,30 @@ class PositionalEncoding(nn.Module):
 
 class CompositionTransformer(nn.Module):
     """
-    Transformer do generowania struktury kompozycji.
+    Transformer for generating composition structure.
     
     Input:
-    - Embedding tekstu (z T5/CLAP) - opis utworu
+    - Text embedding (from T5/CLAP) - track description
     - Target duration (continuous)
     - Genre embedding
     - Mood embedding
     
-    Output (autoregresywnie):
-    - Sekwencja tokenów sekcji
-    - Dla każdej sekcji: duration, tempo, energy, key, has_vocals
+    Output (autoregressive):
+    - Sequence of section tokens
+    - For each section: duration, tempo, energy, key, has_vocals
     """
     
     def __init__(
         self,
-        vocab_size: int = 15,           # Liczba typów sekcji + specjalne tokeny
-        d_model: int = 256,             # Wymiar modelu
-        nhead: int = 4,                 # Liczba głów attention
-        num_encoder_layers: int = 3,    # Warstwy encodera (dla promptu)
-        num_decoder_layers: int = 4,    # Warstwy decodera (autoregresja)
+        vocab_size: int = 15,           # Number of section types + special tokens
+        d_model: int = 256,             # Model dimension
+        nhead: int = 4,                 # Number of attention heads
+        num_encoder_layers: int = 3,    # Encoder layers (for prompt)
+        num_decoder_layers: int = 4,    # Decoder layers (autoregressive)
         dim_feedforward: int = 512,
         dropout: float = 0.1,
-        max_sections: int = 20,         # Max sekcji w utworze
-        text_embed_dim: int = 768,      # Wymiar embeddingu tekstu (T5)
+        max_sections: int = 20,         # Max sections in track
+        text_embed_dim: int = 768,      # Text embedding dimension (T5)
         num_genres: int = 50,
         num_moods: int = 30,
         num_keys: int = 24,             # 12 major + 12 minor
@@ -171,9 +173,9 @@ class CompositionTransformer(nn.Module):
         self.vocab_size = vocab_size
         self.max_sections = max_sections
         
-        # ===== ENCODER (dla kontekstu) =====
+        # ===== ENCODER (for context) =====
         
-        # Projekcja embeddingu tekstu
+        # Text embedding projection
         self.text_proj = nn.Linear(text_embed_dim, d_model)
         
         # Duration embedding (continuous)
@@ -211,8 +213,8 @@ class CompositionTransformer(nn.Module):
         # Key embedding
         self.key_embed = nn.Embedding(num_keys, d_model // 4)
         
-        # Positional encoding
-        self.pos_encoder = PositionalEncoding(d_model, max_sections)
+        # Positional encoding - max_sections + 2 for BOS/EOS tokens
+        self.pos_encoder = PositionalEncoding(d_model, max_sections + 2)
         
         # Decoder transformer
         decoder_layer = nn.TransformerDecoderLayer(
@@ -242,10 +244,10 @@ class CompositionTransformer(nn.Module):
         # Has vocals (binary)
         self.vocals_head = nn.Linear(d_model, 1)
         
-        # Causal mask
+        # Causal mask - max_sections + 2 for BOS/EOS tokens
         self.register_buffer(
             'causal_mask',
-            torch.triu(torch.ones(max_sections, max_sections), diagonal=1).bool()
+            torch.triu(torch.ones(max_sections + 2, max_sections + 2), diagonal=1).bool()
         )
     
     def encode_context(
@@ -365,7 +367,8 @@ class CompositionTransformer(nn.Module):
         
         generated = []
         total_duration = 0.0
-        target_dur = target_duration.item()
+        # Denormalize target_duration (input was normalized by /300)
+        target_dur = target_duration.item() * 300.0
         
         for step in range(max_sections):
             # Decoder input
@@ -448,15 +451,17 @@ class CompositionTransformer(nn.Module):
             total_duration += duration
             
             # Update sequences for next step
+            # next_section has shape [1, 1] from multinomial, need [1, 1] for concat
             current_sections = torch.cat([
                 current_sections,
-                next_section.unsqueeze(0)
+                next_section  # already [1, 1]
             ], dim=1)
             
             next_attrs = torch.tensor([[[tempo_norm, energy, dur_norm, float(has_vocals)]]], device=device)
             current_attrs = torch.cat([current_attrs, next_attrs], dim=1)
             
-            current_keys = torch.cat([current_keys, next_key.unsqueeze(0)], dim=1)
+            # next_key has shape [1, 1] from multinomial
+            current_keys = torch.cat([current_keys, next_key], dim=1)
             
             # Stop if we've reached target duration
             if total_duration >= target_dur * 0.95:
@@ -505,12 +510,64 @@ class CompositionPlanner:
         self.device = device
     
     @classmethod
-    def from_pretrained(cls, checkpoint_path: str, device: str = 'cpu'):
-        """Ładuje wytrenowany model"""
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+    def _infer_config_from_state_dict(cls, state_dict: dict) -> dict:
+        """
+        Automatycznie wykrywa konfigurację modelu z wag checkpointu.
         
-        model = CompositionTransformer(**checkpoint.get('model_config', {}))
-        model.load_state_dict(checkpoint['model_state_dict'])
+        Sprawdza kształty tensorów aby określić:
+        - d_model (z genre_embed.weight shape[1])
+        - num_genres (z genre_embed.weight shape[0])
+        - num_moods (z mood_embed.weight shape[0])
+        - vocab_size (z section_embed.weight shape[0])
+        - num_keys (z key_embed.weight shape[0])
+        """
+        config = {}
+        
+        for key, tensor in state_dict.items():
+            if key == 'genre_embed.weight':
+                config['num_genres'] = tensor.shape[0]
+                config['d_model'] = tensor.shape[1]
+            elif key == 'mood_embed.weight':
+                config['num_moods'] = tensor.shape[0]
+            elif key == 'section_embed.weight':
+                config['vocab_size'] = tensor.shape[0]
+            elif key == 'key_embed.weight':
+                config['num_keys'] = tensor.shape[0]
+            elif key == 'text_proj.weight':
+                config['text_embed_dim'] = tensor.shape[1]
+        
+        return config
+    
+    @classmethod
+    def from_pretrained(cls, checkpoint_path: str, device: str = 'cpu'):
+        """
+        Ładuje wytrenowany model z automatyczną detekcją konfiguracji.
+        
+        Priorytet konfiguracji:
+        1. model_config z checkpointu (jeśli kompletny)
+        2. Automatyczna detekcja z wag state_dict
+        3. Wartości domyślne
+        """
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+        saved_config = checkpoint.get('model_config', {})
+        
+        # Automatically detect config from weights
+        inferred_config = cls._infer_config_from_state_dict(state_dict)
+        
+        # Merge: inferred_config overwrites gaps in saved_config
+        final_config = {**inferred_config, **saved_config}
+        
+        # Make sure inferred values are used (saved may have incomplete data)
+        for key in ['num_genres', 'num_moods', 'vocab_size', 'num_keys', 'd_model']:
+            if key in inferred_config:
+                final_config[key] = inferred_config[key]
+        
+        print(f"   CompositionPlanner config: {final_config}")
+        
+        model = CompositionTransformer(**final_config)
+        model.load_state_dict(state_dict)
         
         return cls(model, device=device)
     

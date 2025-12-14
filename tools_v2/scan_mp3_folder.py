@@ -16,7 +16,7 @@ Użycie:
         --input_dir /path/to/mp3s \
         --output ./data_v2/my_music_metadata.csv
     
-    # Z detekcją języka (wolniejsze)
+    # With language detection (slower)
     python tools_v2/scan_mp3_folder.py \
         --input_dir /path/to/mp3s \
         --output ./data_v2/my_music_metadata.csv \
@@ -56,7 +56,7 @@ class TrackMetadata:
     duration: float = 0.0
     year: str = ""
     
-    # Źródło metadanych
+    # Metadata source
     metadata_source: str = "none"  # id3, filename, folder
 
 
@@ -198,13 +198,13 @@ def extract_from_filename(file_path: Path) -> Dict[str, str]:
     
     stem = file_path.stem  # Nazwa bez rozszerzenia
     
-    # Usuń numer tracka z początku
+    # Remove track number from beginning
     # "01 - Something" -> "Something"
     # "01. Something" -> "Something"
     import re
     stem = re.sub(r'^[\d]+[\.\-\s]+', '', stem)
     
-    # Spróbuj podzielić po " - "
+    # Try to split by " - "
     if ' - ' in stem:
         parts = stem.split(' - ', 1)
         if len(parts) == 2:
@@ -228,13 +228,13 @@ def extract_from_folder(file_path: Path) -> Dict[str, str]:
     
     parts = file_path.parts
     
-    # Idź w górę struktury folderów
+    # Go up the folder structure
     if len(parts) >= 2:
-        parent = parts[-2]  # Bezpośredni folder nadrzędny
+        parent = parts[-2]  # Direct parent folder
         
-        # Sprawdź czy to wygląda na nazwę artysty (nie na numer, nie na "mp3", etc)
+        # Check if it looks like an artist name (not a number, not "mp3", etc)
         if parent and not parent.isdigit() and len(parent) > 2:
-            # Może być album
+            # Might be album
             if len(parts) >= 3:
                 grandparent = parts[-3]
                 if grandparent and not grandparent.isdigit() and len(grandparent) > 2:
@@ -267,11 +267,11 @@ def detect_language_from_text(text: str) -> str:
     if has_polish_chars:
         return 'pl'
     
-    # Polskie słowa kluczowe (w tytułach/artystach)
+    # Polish keywords (in titles/artists)
     polish_words = ['i', 'w', 'nie', 'na', 'się', 'do', 'jest', 'to', 
-                   'feat', 'feat.', 'ft', 'ft.']  # feat jest universal
+                   'feat', 'feat.', 'ft', 'ft.']  # feat is universal
     
-    # Sprawdź polskie słowa w kontekście
+    # Check Polish words in context
     polish_artist_indicators = ['quebonafide', 'taco', 'hemingway', 'sobel', 
                                 'bedoes', 'mata', 'szpaku', 'paluch', 'pezet',
                                 'ostr', 'kękę', 'keke', 'young', 'lull']
@@ -294,7 +294,7 @@ def scan_folder(
     """
     tracks = []
     
-    # Znajdź wszystkie MP3
+    # Find all MP3
     mp3_files = list(input_dir.rglob("*.mp3"))
     mp3_files.extend(input_dir.rglob("*.MP3"))
     
@@ -313,7 +313,7 @@ def scan_folder(
     for mp3_path in iterator:
         metadata = TrackMetadata(file_path=str(mp3_path))
         
-        # 1. Najpierw spróbuj ID3
+        # 1. First try ID3
         id3_data = extract_id3_tags(mp3_path)
         metadata.duration = id3_data['duration']
         
@@ -327,7 +327,7 @@ def scan_folder(
             stats['id3'] += 1
             
         else:
-            # 2. Spróbuj z nazwy pliku
+            # 2. Try from filename
             filename_data = extract_from_filename(mp3_path)
             folder_data = extract_from_folder(mp3_path)
             
@@ -345,7 +345,7 @@ def scan_folder(
                 stats['folder'] += 1
                 
             else:
-                # 3. Ostateczność - Unknown Artist
+                # 3. Last resort - Unknown Artist
                 metadata.artist = "Unknown Artist"
                 metadata.title = mp3_path.stem
                 metadata.metadata_source = "none"
@@ -354,9 +354,9 @@ def scan_folder(
             # Genre z ID3 lub default
             metadata.genre = id3_data['genre'] or default_genre
         
-        # Detekcja języka (opcjonalna)
+        # Language detection (optional)
         if detect_language:
-            # Sprawdź na podstawie artist + title
+            # Check based on artist + title
             text_to_check = f"{metadata.artist} {metadata.title}"
             metadata.language = detect_language_from_text(text_to_check)
         
@@ -410,7 +410,7 @@ def export_missing_for_completion(tracks: List[TrackMetadata], output_path: Path
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Filtruj tracki z brakującymi danymi
+    # Filter tracks with missing data
     missing_tracks = [
         t for t in tracks 
         if t.genre in ('unknown', '', None) or t.artist in ('Unknown Artist', '', None)
@@ -423,14 +423,14 @@ def export_missing_for_completion(tracks: List[TrackMetadata], output_path: Path
     # Format kompatybilny z build_dataset_v2.py --metadata_mapping
     # Kolumny: file_path, artist, genre (wymagane przez _load_metadata_mapping)
     fieldnames = [
-        'file_path',       # Ścieżka do pliku (wymagane - pełna ścieżka!)
-        'artist',          # Artysta (do uzupełnienia jeśli brak)
-        'genre',           # Genre (DO UZUPEŁNIENIA!)
-        'title',           # Tytuł (opcjonalnie)
-        'album',           # Album (opcjonalnie)
-        '_current_genre',  # Obecny genre (dla informacji - ignorowane przez builder)
-        '_current_artist', # Obecny artist (dla informacji - ignorowane przez builder)
-        '_metadata_source' # Skąd pochodzi obecne (dla informacji - ignorowane przez builder)
+        'file_path',       # Path to file (required - full path!)
+        'artist',          # Artist (to complete if missing)
+        'genre',           # Genre (TO COMPLETE!)
+        'title',           # Title (optional)
+        'album',           # Album (optional)
+        '_current_genre',  # Current genre (for info - ignored by builder)
+        '_current_artist', # Current artist (for info - ignored by builder)
+        '_metadata_source' # Where current comes from (for info - ignored by builder)
     ]
     
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
@@ -438,12 +438,12 @@ def export_missing_for_completion(tracks: List[TrackMetadata], output_path: Path
         writer.writeheader()
         
         for track in missing_tracks:
-            # Kolumny zaczynające się od _ są tylko informacyjne (ignorowane przez builder)
-            # build_dataset_v2.py użyje file_path, artist, genre
+            # Columns starting with _ are info only (ignored by builder)
+            # build_dataset_v2.py will use file_path, artist, genre
             writer.writerow({
                 'file_path': track.file_path,
                 'artist': track.artist if track.artist != 'Unknown Artist' else '',
-                'genre': '',  # <-- DO UZUPEŁNIENIA!
+                'genre': '',  # <-- TO COMPLETE!
                 'title': track.title,
                 'album': track.album,
                 '_current_genre': track.genre,
@@ -467,10 +467,10 @@ def export_missing_for_completion(tracks: List[TrackMetadata], output_path: Path
 
 
 def print_summary(tracks: List[TrackMetadata]):
-    """Wyświetla podsumowanie datasetu"""
+    """Displays dataset summary"""
     from collections import Counter
     
-    # Unikalni artyści
+    # Unique artists
     artists = Counter(t.artist for t in tracks)
     genres = Counter(t.genre for t in tracks if t.genre != "unknown")
     languages = Counter(t.language for t in tracks if t.language)
@@ -496,10 +496,10 @@ def print_summary(tracks: List[TrackMetadata]):
     if languages:
         print(f"\n   Języki:")
         for lang, count in languages.most_common():
-            lang_name = {'pl': 'Polski', 'en': 'Angielski'}.get(lang, lang)
+            lang_name = {'pl': 'Polish', 'en': 'English'}.get(lang, lang)
             print(f"      {lang_name}: {count}")
     
-    # Artyści z "Unknown"
+    # Artists with "Unknown"
     unknown_count = artists.get("Unknown Artist", 0)
     if unknown_count > 0:
         print(f"\n   ⚠️ Utwory bez artysty: {unknown_count}")
@@ -546,15 +546,15 @@ def main():
     # Podsumowanie
     print_summary(tracks)
     
-    # Zapisz pełny CSV
+    # Save full CSV
     save_csv(tracks, Path(args.output))
     
-    # Eksportuj do uzupełnienia jeśli podano --export_missing
+    # Export for completion if --export_missing provided
     missing_count = 0
     if args.export_missing:
         missing_count = export_missing_for_completion(tracks, Path(args.export_missing))
     else:
-        # Sprawdź czy są brakujące i zasugeruj eksport
+        # Check if there are missing and suggest export
         missing_tracks = [
             t for t in tracks 
             if t.genre in ('unknown', '', None) or t.artist in ('Unknown Artist', '', None)
@@ -564,7 +564,7 @@ def main():
             print(f"\n⚠️  {len(missing_tracks)} plików ma brakujące metadane!")
             print(f"   Użyj --export_missing {missing_path} aby wyeksportować do uzupełnienia")
     
-    # Następny krok
+    # Next step
     if missing_count > 0:
         print("\n💡 Po uzupełnieniu CSV uruchom:")
         print(f"   METADATA_MAPPING={args.export_missing} ./run_multi_gpu.sh 8 {args.input_dir}")

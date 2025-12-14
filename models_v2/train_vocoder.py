@@ -70,7 +70,7 @@ def discriminator_loss(disc_real_outputs: List[torch.Tensor],
 
 
 def generator_loss(disc_outputs: List[torch.Tensor]) -> torch.Tensor:
-    """Generator adversarial loss - chce żeby fake wyglądał jak real (> 0)"""
+    """Generator adversarial loss - wants fake to look like real (> 0)"""
     loss = 0
     for dg in disc_outputs:
         loss += torch.mean(torch.clamp(1 - dg, min=0))
@@ -79,14 +79,14 @@ def generator_loss(disc_outputs: List[torch.Tensor]) -> torch.Tensor:
 
 class VocoderTrainer:
     """
-    Trener dla HiFi-GAN zintegrowany z VAE.
+    Trainer for HiFi-GAN integrated with VAE.
     
     Workflow:
-    1. Załaduj batch audio
+    1. Load audio batch
     2. Audio → VAE → reconstructed mel
     3. Reconstructed mel → HiFi-GAN → generated audio
-    4. Trenuj dyskryminatory: rozróżnij real vs generated
-    5. Trenuj generator: oszukaj dyskryminatory + mel matching
+    4. Train discriminators: distinguish real vs generated
+    5. Train generator: fool discriminators + mel matching
     """
     
     def __init__(
@@ -94,7 +94,7 @@ class VocoderTrainer:
         generator: nn.Module,
         mpd: nn.Module,  # Multi-Period Discriminator
         msd: nn.Module,  # Multi-Scale Discriminator
-        vae: nn.Module,  # AudioVAE (zamrożony)
+        vae: nn.Module,  # AudioVAE (frozen)
         sample_rate: int = 32000,
         n_mels: int = 128,
         hop_length: int = 320,
@@ -106,7 +106,7 @@ class VocoderTrainer:
         self.vae = vae.to(device)
         self.device = device
         
-        # Zamroź VAE
+        # Freeze VAE
         self.vae.eval()
         for param in self.vae.parameters():
             param.requires_grad = False
@@ -138,32 +138,32 @@ class VocoderTrainer:
     
     def train_step(self, audio: torch.Tensor) -> Dict[str, float]:
         """
-        Pojedynczy krok treningowy.
+        Single training step.
         
         Args:
-            audio: Waveform [B, T] lub [B, 1, T]
+            audio: Waveform [B, T] or [B, 1, T]
             
         Returns:
-            Dict ze stratami
+            Dict with losses
         """
         if audio.dim() == 2:
             audio = audio.unsqueeze(1)  # [B, 1, T]
         
         audio = audio.to(self.device)
         
-        # 1. Przepuść audio przez VAE (dostajemy mel)
+        # 1. Pass audio through VAE (we get mel)
         with torch.no_grad():
             vae_out = self.vae(audio)
             mel_vae = vae_out['mel']  # [B, 1, n_mels, T]
             mel_recon = vae_out['mel_recon']  # [B, 1, n_mels, T]
         
-        # Przygotuj mel dla generatora [B, n_mels, T]
+        # Prepare mel for generator [B, n_mels, T]
         mel_input = mel_recon.squeeze(1)  # [B, n_mels, T]
         
         # 2. Generator: mel → audio
         audio_gen = self.generator(mel_input)  # [B, 1, T]
         
-        # Dopasuj długości (audio_gen może być innej długości)
+        # Match lengths (audio_gen may be different length)
         min_len = min(audio.shape[-1], audio_gen.shape[-1])
         audio = audio[..., :min_len]
         audio_gen = audio_gen[..., :min_len]
@@ -200,7 +200,7 @@ class VocoderTrainer:
         loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
         loss_fm = loss_fm_f + loss_fm_s
         
-        # Mel loss (generated audio → mel powinno być podobne do input mel)
+        # Mel loss (generated audio → mel should be similar to input mel)
         mel_gen = self.mel_transform(audio_gen.squeeze(1))
         if mel_gen.shape[-1] != mel_input.shape[-1]:
             min_t = min(mel_gen.shape[-1], mel_input.shape[-1])
@@ -229,7 +229,7 @@ class VocoderTrainer:
         }
     
     def step_schedulers(self):
-        """Aktualizuje learning rate"""
+        """Updates learning rate"""
         self.scheduler_g.step()
         self.scheduler_d.step()
 
@@ -242,25 +242,25 @@ def train_vocoder(
     epochs: int = 100,
     batch_size: int = 16,
     sample_rate: int = 32000,
-    segment_duration: float = 1.0,  # Krótsze segmenty dla vocoder
+    segment_duration: float = 1.0,  # Shorter segments for vocoder
     device: str = 'cuda',
     save_every: int = 10,
     num_workers: int = 4,
 ):
     """
-    Główna funkcja treningu vocodera.
+    Main vocoder training function.
     
     Args:
-        vae_checkpoint: Ścieżka do wytrenowanego VAE
-        annotations_json: Plik z datasetek
-        audio_dir: Katalog z audio
-        checkpoint_dir: Gdzie zapisywać
-        epochs: Liczba epok
-        batch_size: Rozmiar batcha
-        sample_rate: Sample rate (powinien być taki sam jak VAE)
-        segment_duration: Długość segmentu w sekundach
+        vae_checkpoint: Path to trained VAE
+        annotations_json: Dataset file
+        audio_dir: Audio directory
+        checkpoint_dir: Where to save
+        epochs: Number of epochs
+        batch_size: Batch size
+        sample_rate: Sample rate (should be same as VAE)
+        segment_duration: Segment duration in seconds
         device: Device
-        save_every: Co ile epok zapisywać
+        save_every: Save every N epochs
     """
     from models.audio_vae import AudioVAE
     from models.vocoder import HiFiGANGenerator, MultiPeriodDiscriminator, MultiScaleDiscriminator
@@ -307,7 +307,7 @@ def train_vocoder(
         annotations_json=annotations_json,
         audio_dir=audio_dir,
         sample_rate=sample_rate,
-        segment_duration=segment_duration,  # Krótsze dla vocoder
+        segment_duration=segment_duration,  # Shorter for vocoder
         include_context=False,
     )
     

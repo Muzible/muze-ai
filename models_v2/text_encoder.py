@@ -53,22 +53,22 @@ class CLAPEncoder(nn.Module):
     Wrapper dla CLAP (Contrastive Language-Audio Pretraining).
     
     v2 Updates:
-    - LoRA fine-tuning zamiast pełnego zamrożenia
-    - Lepsze dostosowanie do domeny muzycznej
+    - LoRA fine-tuning instead of full freezing
+    - Better adaptation to music domain
     
-    CLAP jest trenowany na parach audio-tekst, więc rozumie opisy muzyczne
-    i może tworzyć embeddingi zarówno z tekstu jak i audio.
+    CLAP is trained on audio-text pairs, so it understands music descriptions
+    and can create embeddings from both text and audio.
     """
     
     def __init__(
         self,
         model_name: str = "laion/clap-htsat-unfused",
-        freeze: bool = False,        # v2: domyślnie False (używamy LoRA)
+        freeze: bool = False,        # v2: default False (we use LoRA)
         use_lora: bool = True,       # v2: LoRA fine-tuning
         lora_r: int = 16,            # LoRA rank
         lora_alpha: int = 32,        # LoRA alpha (scaling)
         lora_dropout: float = 0.1,   # LoRA dropout
-        lora_target_modules: list = None,  # Które moduły adaptować
+        lora_target_modules: list = None,  # Which modules to adapt
         device: str = 'cpu',
     ):
         super().__init__()
@@ -137,7 +137,7 @@ class CLAPEncoder(nn.Module):
             self._processor = ClapProcessor.from_pretrained(self.model_name)
             self._model = self._model.to(self.device)
             
-            # v2: Najpierw spróbuj LoRA, potem ewentualnie freeze
+            # v2: First try LoRA, then optionally freeze
             if self.use_lora:
                 self._apply_lora()
             elif self.freeze:
@@ -157,7 +157,7 @@ class CLAPEncoder(nn.Module):
             self._model = "dummy"
     
     def get_trainable_parameters(self):
-        """Zwraca parametry do trenowania (tylko LoRA jeśli aktywne)"""
+        """Returns parameters for training (only LoRA if active)"""
         self._load_model()
         if self._model == "dummy":
             return []
@@ -424,8 +424,15 @@ class EnhancedMusicEncoder(nn.Module):
             # T5 fallback
             if use_t5_fallback:
                 from transformers import T5EncoderModel, T5Tokenizer
+                import warnings
                 print("Using T5 fallback instead of CLAP")
-                self.t5_tokenizer = T5Tokenizer.from_pretrained("t5-base")
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=FutureWarning)
+                    self.t5_tokenizer = T5Tokenizer.from_pretrained(
+                        "t5-base",
+                        model_max_length=512,
+                        legacy=False,
+                    )
                 self.t5_model = T5EncoderModel.from_pretrained("t5-base")
                 self.t5_model = self.t5_model.to(device)
                 for param in self.t5_model.parameters():
@@ -437,10 +444,10 @@ class EnhancedMusicEncoder(nn.Module):
             output_dim=output_dim,
         )
         
-        # Audio reference projection (dla style embedding)
+        # Audio reference projection (for style embedding)
         self.audio_proj = nn.Linear(clap_dim, output_dim)
         
-        # Cross-attention dla łączenia text i audio reference
+        # Cross-attention for merging text and audio reference
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=output_dim,
             num_heads=8,
@@ -587,10 +594,10 @@ class SequenceEncoder(nn.Module):
         self.section_encoder = section_encoder
         self.d_model = d_model
         
-        # Positional encoding dla sekwencji sekcji
+        # Positional encoding for section sequence
         self.pos_embedding = nn.Parameter(torch.randn(1, max_sections, d_model) * 0.02)
         
-        # Transformer dla modelowania zależności
+        # Transformer for modeling dependencies
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -611,17 +618,17 @@ class SequenceEncoder(nn.Module):
         energies: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Enkoduje sekwencję sekcji.
+        Encodes section sequence.
         
         Returns:
-            global_embed: [B, d_model] globalne podsumowanie
-            section_embeds: [B, num_sections, d_model] embeddingi per sekcja
+            global_embed: [B, d_model] global summary
+            section_embeds: [B, num_sections, d_model] embeddings per section
         """
         B = len(texts)
         num_sections = len(texts[0])
         device = positions.device
         
-        # Enkoduj każdą sekcję osobno
+        # Encode each section separately
         section_embeds = []
         for i in range(num_sections):
             section_texts = [t[i] for t in texts]
@@ -693,7 +700,7 @@ if __name__ == "__main__":
     print(f"  Output shape: {output.shape}")
     print(f"  Style shape: {style.shape}")
     
-    # Test CLAP (jeśli dostępny)
+    # Test CLAP (if available)
     print("\n🔊 Testing CLAP encoder (if available)...")
     clap = CLAPEncoder(device=device)
     

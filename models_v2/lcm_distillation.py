@@ -61,13 +61,13 @@ class LCMScheduler:
         
         self.alphas_cumprod = alphas_cumprod
         
-        # Compute timesteps for LCM (równomiernie rozłożone)
+        # Compute timesteps for LCM (evenly distributed)
         self.timesteps = self._get_timesteps()
     
     def _get_timesteps(self) -> torch.Tensor:
-        """Oblicza timesteps dla LCM inferencji"""
-        # Równomiernie rozłożone timesteps
-        # np. dla 4 kroków: [199, 149, 99, 49, 0] lub podobnie
+        """Computes timesteps for LCM inference"""
+        # Evenly distributed timesteps
+        # e.g. for 4 steps: [199, 149, 99, 49, 0] or similar
         step_ratio = self.original_steps // self.num_inference_steps
         timesteps = torch.arange(self.num_inference_steps) * step_ratio
         timesteps = self.original_steps - 1 - timesteps
@@ -115,7 +115,7 @@ class LCMDistillationTrainer:
         self.w_min = w_min
         self.w_max = w_max
         
-        # Teacher (zamrożony)
+        # Teacher (frozen)
         self.teacher = teacher_ldm
         self.teacher.eval()
         for param in self.teacher.parameters():
@@ -155,8 +155,8 @@ class LCMDistillationTrainer:
             ema_param.data.mul_(self.ema_decay).add_(param.data, alpha=1 - self.ema_decay)
     
     def get_w(self) -> torch.Tensor:
-        """Losuje guidance scale z rozkładu log-uniform"""
-        # Log-uniform distribution między w_min i w_max
+        """Samples guidance scale from log-uniform distribution"""
+        # Log-uniform distribution between w_min and w_max
         log_w = torch.rand(1, device=self.device) * (math.log(self.w_max) - math.log(self.w_min)) + math.log(self.w_min)
         return torch.exp(log_w)
     
@@ -191,8 +191,8 @@ class LCMDistillationTrainer:
         """
         z = z_t.clone()
         
-        # Interpoluj timesteps między t_start i t_end
-        num_steps = max(1, abs(t_start - t_end) // 20)  # ~20 kroków na segment
+        # Interpolate timesteps between t_start and t_end
+        num_steps = max(1, abs(t_start - t_end) // 20)  # ~20 steps per segment
         timesteps = torch.linspace(t_start, t_end, num_steps + 1, dtype=torch.long, device=self.device)
         
         alphas_cumprod = self.scheduler.alphas_cumprod.to(self.device)
@@ -235,11 +235,11 @@ class LCMDistillationTrainer:
         B = z_0.shape[0]
         device = z_0.device
         
-        # Losuj guidance scale
+        # Sample guidance scale
         w = self.get_w()
         
-        # Losuj parę timesteps (t_n, t_n+k) gdzie k to skip
-        # Używamy timesteps ze schedulera
+        # Sample timesteps pair (t_n, t_n+k) where k is skip
+        # We use timesteps from scheduler
         idx = torch.randint(0, self.num_inference_steps - 1, (B,), device=device)
         t_n = self.scheduler.timesteps[idx].to(device)
         t_n_plus_k = self.scheduler.timesteps[idx + 1].to(device)
@@ -262,7 +262,7 @@ class LCMDistillationTrainer:
         eps_n = self.student_unet(z_t_n, t_n, text_embed, **kwargs)
         pred_x0_n = self.predicted_x0(eps_n, t_n, z_t_n)
         
-        # Dla z_t_n+k teacher rozwiązuje ODE do t_n, potem student przewiduje
+        # For z_t_n+k teacher solves ODE to t_n, then student predicts
         with torch.no_grad():
             # Teacher: z_{t_n+k} → z_{t_n} (przez ODE)
             z_teacher_at_n = self.teacher_solve_ode(
@@ -277,8 +277,8 @@ class LCMDistillationTrainer:
         eps_n_target = self.student_unet(z_teacher_at_n.detach(), t_n, text_embed, **kwargs)
         pred_x0_n_target = self.predicted_x0(eps_n_target, t_n, z_teacher_at_n)
         
-        # Consistency loss: predictions powinny być takie same
-        # Używamy target z EMA studenta dla stabilności (jak w LCM paper)
+        # Consistency loss: predictions should be the same
+        # We use target from EMA student for stability (as in LCM paper)
         if self.ema_student is not None:
             with torch.no_grad():
                 eps_ema = self.ema_student(z_teacher_at_n, t_n, text_embed, **kwargs)
@@ -287,7 +287,7 @@ class LCMDistillationTrainer:
         else:
             target = pred_x0_n_target.detach()
         
-        # Huber loss (bardziej stabilny niż MSE)
+        # Huber loss (more stable than MSE)
         loss = F.huber_loss(pred_x0_n, target, delta=1.0)
         
         return {
@@ -321,11 +321,11 @@ class LCMDistillationTrainer:
         alpha_t = alphas_cumprod[t][:, None, None, None]
         z_t = torch.sqrt(alpha_t) * z_0 + torch.sqrt(1 - alpha_t) * noise
         
-        # Teacher: rozwiąż ODE z_t → z_0
+        # Teacher: solve ODE z_t → z_0
         with torch.no_grad():
             teacher_pred = self.teacher_solve_ode(z_t, int(t[0].item()), 0, text_embed, **kwargs)
         
-        # Student: bezpośrednia predykcja x_0
+        # Student: direct prediction x_0
         eps_student = self.student_unet(z_t, t, text_embed, **kwargs)
         student_pred = self.predicted_x0(eps_student, t, z_t)
         
@@ -527,7 +527,7 @@ class LatentConsistencyModel(nn.Module):
             # Clamp for stability
             pred_x0 = torch.clamp(pred_x0, -1, 1)
             
-            # Next step (jeśli nie ostatni)
+            # Next step (if not last)
             if i < len(timesteps) - 1:
                 t_next = timesteps[i + 1]
                 alpha_next = alphas_cumprod[t_next]

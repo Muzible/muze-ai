@@ -33,7 +33,7 @@ import random
 
 
 class SectionEmbedding:
-    """Tworzy embeddingi dla typów sekcji"""
+    """Creates embeddings for section types"""
     
     SECTION_TYPES = [
         'intro', 'verse', 'pre_chorus', 'chorus', 'post_chorus',
@@ -46,12 +46,12 @@ class SectionEmbedding:
         self.num_sections = len(self.SECTION_TYPES)
         self.section_to_idx = {s: i for i, s in enumerate(self.SECTION_TYPES)}
         
-        # Pre-computed embeddings (można też użyć nn.Embedding)
+        # Pre-computed embeddings (can also use nn.Embedding)
         self._embeddings = self._create_embeddings()
     
     def _create_embeddings(self) -> Dict[str, np.ndarray]:
-        """Tworzy semantyczne embeddingi dla sekcji"""
-        # Bazujemy na charakterystyce sekcji:
+        """Creates semantic embeddings for sections"""
+        # Based on section characteristics:
         # [energy, has_vocals, is_repetitive, position_bias, brightness, complexity]
         
         base_features = {
@@ -115,8 +115,8 @@ class SegmentedMusicDataset(Dataset):
         audio_dir: str,
         sample_rate: int = 22050,
         segment_duration: float = 10.0,
-        include_context: bool = True,      # Czy dołączać poprzedni segment
-        context_overlap: float = 0.5,      # Overlap z poprzednim segmentem (0-1)
+        include_context: bool = True,      # Whether to include previous segment
+        context_overlap: float = 0.5,      # Overlap with previous segment (0-1)
         max_tracks: Optional[int] = None,
         filter_short_segments: bool = True,
         min_segment_duration: float = 4.0,
@@ -162,7 +162,7 @@ class SegmentedMusicDataset(Dataset):
         if max_tracks:
             tracks = tracks[:max_tracks]
         
-        # Flatten: każdy segment to osobny sample
+        # Flatten: each segment is a separate sample
         self.samples = []
         missing_audio = 0
         short_segments = 0
@@ -171,7 +171,7 @@ class SegmentedMusicDataset(Dataset):
             track_id = track.get('track_id', '')
             file_path = track.get('file_path', '')
             
-            # Znajdź plik audio
+            # Find audio file
             audio_path = self._find_audio_file(track_id, file_path)
             if audio_path is None:
                 missing_audio += 1
@@ -186,7 +186,7 @@ class SegmentedMusicDataset(Dataset):
                     short_segments += 1
                     continue
                 
-                # Poprzedni segment (dla kontekstu)
+                # Previous segment (for context)
                 prev_segment = segments[i-1] if i > 0 else None
                 
                 # Pobierz vocals data
@@ -241,19 +241,19 @@ class SegmentedMusicDataset(Dataset):
         print(f"  Short segments filtered: {short_segments}")
     
     def _find_audio_file(self, track_id: str, file_path: str) -> Optional[Path]:
-        """Znajduje plik audio"""
-        # Najpierw spróbuj file_path (może być względna lub absolutna)
+        """Finds audio file"""
+        # First try file_path (may be relative or absolute)
         if file_path:
             p = Path(file_path)
             if p.exists():
                 return p
-            # Spróbuj względem katalogu roboczego
+            # Try relative to working directory
             if not p.is_absolute():
-                # file_path może być względna jak "music/own/artist/track.mp3"
+                # file_path may be relative like "music/own/artist/track.mp3"
                 cwd_path = Path.cwd() / p
                 if cwd_path.exists():
                     return cwd_path
-            # Spróbuj względem audio_dir (tylko nazwa pliku)
+            # Try relative to audio_dir (filename only)
             p = self.audio_dir / p.name
             if p.exists():
                 return p
@@ -265,7 +265,7 @@ class SegmentedMusicDataset(Dataset):
             if p.exists():
                 return p
         
-        # Spróbuj różne rozszerzenia
+        # Try different extensions
         for ext in ['.mp3', '.wav', '.flac']:
             p = self.audio_dir / f'{track_id}{ext}'
             if p.exists():
@@ -285,9 +285,9 @@ class SegmentedMusicDataset(Dataset):
         start_time: float, 
         duration: float
     ) -> torch.Tensor:
-        """Wczytuje fragment audio"""
+        """Loads audio segment"""
         try:
-            # Oblicz offsety
+            # Calculate offsets
             info = torchaudio.info(audio_path)
             sr_orig = info.sample_rate
             
@@ -380,12 +380,12 @@ class SegmentedMusicDataset(Dataset):
         segment_sentiment = segment.get('lyrics_sentiment', 'neutral')
         segment_sentiment_score = segment.get('sentiment_score', 0.5)
         
-        # Beat positions w ramach tego segmentu
+        # Beat positions within this segment
         all_beats = sample.get('beat_positions', [])
         segment_beats = [b - start_time for b in all_beats 
                         if start_time <= b < end_time]
         
-        # Chord w tym segmencie (znajdź aktualny chord)
+        # Chord in this segment (find current chord)
         chord_seq = sample.get('chord_sequence', [])
         current_chord = 'C'  # default
         for chord_info in chord_seq:
@@ -419,11 +419,11 @@ class SegmentedMusicDataset(Dataset):
             'time_signature': sample.get('time_signature', '4/4'),
             
             # Beat sync data
-            'beat_positions': segment_beats,  # Beats w tym segmencie (względne)
+            'beat_positions': segment_beats,  # Beats in this segment (relative)
             'num_beats': len(segment_beats),
             
             # Prompts
-            'prompt': prompt,  # Segment prompt lub global
+            'prompt': prompt,  # Segment prompt or global
             'global_prompt': sample.get('global_prompt', ''),
             
             # Track info
@@ -432,7 +432,7 @@ class SegmentedMusicDataset(Dataset):
             'artist': sample.get('artist', ''),
             'genres': sample.get('genres', []),
             
-            # 🎤 Voice embeddings dla voice cloning
+            # 🎙️ Voice embeddings for voice cloning
             'voice_embedding': torch.tensor(voice_emb, dtype=torch.float32) if voice_emb else torch.zeros(256),
             'voice_embedding_separated': torch.tensor(voice_emb_sep, dtype=torch.float32) if voice_emb_sep else torch.zeros(192),
             
@@ -460,22 +460,22 @@ class SegmentedMusicDataset(Dataset):
             'f0_voiced_mask': torch.tensor(segment.get('f0_voiced_mask', []), dtype=torch.bool) if segment.get('f0_voiced_mask') else None,
             'f0_statistics': segment.get('f0_statistics', {}),
             
-            # 🎤 Vibrato analysis (v3) - dla ekspresji wokalnej
+            # 🎙️ Vibrato analysis (v3) - for vocal expression
             'vibrato_rate': segment.get('vibrato_rate'),      # Hz (typically 4-8 Hz)
             'vibrato_depth': segment.get('vibrato_depth'),    # semitones
             'vibrato_extent': segment.get('vibrato_extent'),  # % of voiced frames with vibrato
             
-            # 💨 Breath positions (v3) - dla naturalnych oddechów
+            # 💨 Breath positions (v3) - for natural breaths
             'breath_positions': segment.get('breath_positions', []),
         }
         
-        # Context (poprzedni segment)
+        # Context (previous segment)
         if self.include_context and sample['prev_segment'] is not None:
             prev_seg = sample['prev_segment']
             prev_start = prev_seg.get('start_time', 0)
             prev_end = prev_seg.get('end_time', prev_start + self.segment_duration)
             
-            # Wczytaj końcówkę poprzedniego segmentu
+            # Load end of previous segment
             overlap_duration = self.segment_duration * self.context_overlap
             context_start = max(prev_start, prev_end - overlap_duration)
             
@@ -594,7 +594,7 @@ class CompositionDataset(Dataset):
             # v2: Extract prompts and metadata
             global_prompt = track.get('prompt', track.get('global_prompt', ''))
             if not global_prompt:
-                # Fallback: generuj prosty prompt z dostępnych danych
+                # Fallback: generate simple prompt from available data
                 genre = track.get('genre', track.get('top_genre', 'unknown'))
                 mood = track.get('mood', 'unknown')
                 tempo = track.get('global_tempo', track.get('features', {}).get('tempo', 120))
@@ -771,24 +771,24 @@ def collate_segmented(batch: List[Dict]) -> Dict[str, Any]:
         
         # === 🗣️ PHONEMES ===
         'phonemes_ipa': [b['phonemes_ipa'] for b in batch],
-        # phonemes_words jest listą słowników - zostawiamy jako lista
+        # phonemes_words is a list of dicts - keep as list
         'phonemes_words': [b['phonemes_words'] for b in batch],
         
         # === 📝 PHONEME TIMESTAMPS PER SEGMENT (v3) ===
-        # Lista słowników z timestampami - zmienna długość
+        # List of dicts with timestamps - variable length
         'phoneme_timestamps': [b.get('phoneme_timestamps', []) for b in batch],
         
         # === 🎵 BEAT DATA ===
-        # beat_positions ma różną długość per sample - zostawiamy jako lista
+        # beat_positions has different length per sample - keep as list
         'beat_positions': [b['beat_positions'] for b in batch],
         
         # === 💨 BREATH POSITIONS (v3) ===
-        # Zmienna długość - lista list
+        # Variable length - list of lists
         'breath_positions': [b.get('breath_positions', []) for b in batch],
     }
     
-    # === 🎤 VIBRATO ANALYSIS (v3) ===
-    # Scalar values per segment - może być None
+    # === 🎙️ VIBRATO ANALYSIS (v3) ===
+    # Scalar values per segment - may be None
     vibrato_rates = [b.get('vibrato_rate') for b in batch]
     vibrato_depths = [b.get('vibrato_depth') for b in batch]
     vibrato_extents = [b.get('vibrato_extent') for b in batch]
@@ -808,7 +808,7 @@ def collate_segmented(batch: List[Dict]) -> Dict[str, Any]:
     )
     
     # === 🎵 F0/PITCH CONTOUR (v3) ===
-    # F0 ma zmienną długość - potrzebujemy padding lub lista
+    # F0 has variable length - need padding or list
     f0_list = [b.get('f0') for b in batch]
     if any(f0 is not None for f0 in f0_list):
         # Pad to max length
