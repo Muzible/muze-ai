@@ -27,15 +27,15 @@
 - **Audio VAE** - kompresuje spektrogramy mel do przestrzeni latentnej
 - **T5 Text Encoder** - enkoduje prompty tekstowe
 - **Voice Conditioning** - kondycjonuje generację stylem głosu artysty
-- **Vocos Vocoder** - konwertuje mel-spektrogramy na audio
+- **HiFi-GAN Vocoder** - konwertuje mel-spektrogramy na audio (32kHz)
 - **Voice Cloning (XTTS v2)** - klonuje głos do syntezy wokalu
 
 ### Dwa tryby głosu:
 
 | Tryb | Flaga | Opis | Legalność |
 |------|-------|------|-----------|
-| **Styl artysty** | `--artist_style AWOL` | Voice embedding wpływa na "vibe" generowanej muzyki | ✅ Legalne |
-| **Klonowanie głosu** | `--clone_voice_from ./vocal.wav` | Syntezuje wokal głosem z nagrania | ⚠️ Wymaga zgody |
+| **Styl artysty** | `--style_of AWOL` | Voice embedding wpływa na "vibe" generowanej muzyki | ✅ Legalne |
+| **Klonowanie głosu** | `--voice_clone_samples ./vocal.wav` | Syntezuje wokal głosem z nagrania | ⚠️ Wymaga zgody |
 
 ---
 
@@ -65,7 +65,7 @@
                                                        │
                                                        ▼
                        ┌─────────────────┐    ┌─────────────────┐
-                       │   Vocos         │───▶│   Audio WAV     │
+                       │   HiFi-GAN     │───▶│   Audio WAV     │
                        │   (24kHz)       │    │   [samples]     │
                        └─────────────────┘    └─────────────────┘
 ```
@@ -768,12 +768,12 @@ python build_dataset_v2.py \
 ║  │        │                                                                                                │ ║
 ║  │        ▼                                                                                                │ ║
 ║  │   ┌─────────────────────┐                                                                               │ ║
-║  │   │   Vocos Vocoder     │ ──→ audio [1, samples]  (Waveform @ 24kHz)                                   │ ║
+║  │   │   HiFi-GAN Vocoder  │ ──→ audio [1, samples]  (Waveform @ 32kHz)                                   │ ║
 ║  │   │   (mel → waveform)  │                                                                               │ ║
 ║  │   └─────────────────────┘                                                                               │ ║
 ║  │        │                                                                                                │ ║
 ║  │        ▼                                                                                                │ ║
-║  │   💾 torchaudio.save("output.wav", audio, 24000)                                                       │ ║
+║  │   💾 torchaudio.save("output.wav", audio, 32000)                                                       │ ║
 ║  │                                                                                                         │ ║
 ║  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ ║
 ║                                                                                                              ║
@@ -1316,7 +1316,7 @@ voice_dropout = 0.1   # Voice conditioning dropout
 4. Template → CompositionPlanner → struktura sekcji
 5. Per sekcja: Noise + embeddings → UNet V2 denoising → Latent
 6. Latent → VAE Decoder → Mel spectrogram
-7. Mel → Vocos → Audio WAV
+7. Mel → HiFi-GAN → Audio WAV
 8. Concat all sections → Final audio
 
 ---

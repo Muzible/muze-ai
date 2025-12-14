@@ -121,13 +121,13 @@ python inference_v2.py \
 # With artist voice style
 python inference_v2.py \
     --prompt "Melancholic hip-hop with deep bass" \
-    --artist_style "AWOL" \
+    --style_of "AWOL" \
     --output ./output/with_style.wav
 
 # With voice cloning (requires reference audio)
 python inference_v2.py \
     --prompt "Pop ballad with emotional vocals" \
-    --clone_voice_from ./reference_vocal.wav \
+    --voice_clone_samples ./reference_vocal.wav \
     --output ./output/cloned.wav
 ```
 
@@ -162,8 +162,8 @@ muzible-muze-ai/
 
 | Mode | Flag | Description | Legal |
 |------|------|-------------|-------|
-| **Style Transfer** | `--artist_style NAME` | Voice embedding influences music "vibe" | ✅ Legal |
-| **Voice Cloning** | `--clone_voice_from FILE` | Synthesize vocals with cloned voice | ⚠️ Requires consent |
+| **Style Transfer** | `--style_of NAME` | Voice embedding influences music "vibe" | ✅ Legal |
+| **Voice Cloning** | `--voice_clone_samples FILE` | Synthesize vocals with cloned voice | ⚠️ Requires consent |
 
 ---
 

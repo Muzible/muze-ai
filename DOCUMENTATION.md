@@ -41,9 +41,9 @@
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
 │  │                    CORE COMPONENTS                                    │  │
 │  ├──────────────────────────────────────────────────────────────────────┤  │
-│  │  AudioVAE (224M)  │  UNet V2 (722M-6.1B)  │  Vocos Vocoder          │  │
+│  │  AudioVAE (224M)  │  UNet V2 (722M-6.1B)  │  HiFi-GAN Vocoder       │  │
 │  │  - Mel → Latent   │  - Noise → Latent     │  - Mel → Waveform       │  │
-│  │  - Latent → Mel   │  - Voice Attention    │  - 44.1kHz output       │  │
+│  │  - Latent → Mel   │  - Voice Attention    │  - 32kHz output         │  │
 │  │  - KL + STFT Loss │  - Section Cond.      │  - High quality         │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                             │
@@ -58,7 +58,7 @@
 | **UNet V2** | 722M-6.1B | Latent diffusion denoising |
 | **T5 Encoder** | 250M | Text prompt encoding |
 | **CLAP** | 600M | Audio-text joint embeddings |
-| **Vocos** | 13M | High-quality vocoder |
+| **HiFi-GAN** | ~13M | High-quality vocoder (32kHz) |
 
 ---
 
@@ -407,7 +407,7 @@ Final:    Fusion MLP → output_dim (1024)
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │ Step 5: Audio Decoding                                              │   │
 │  │   z_0 → VAE.decode() → mel_spectrogram [128, T]                     │   │
-│  │   mel → Vocos → audio_waveform [samples]                            │   │
+│  │   mel → HiFi-GAN → audio_waveform [samples]                         │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                           │                                                │
 │                           ▼                                                │
@@ -838,7 +838,7 @@ voice_dropout = 0.1   # Voice conditioning dropout
 4. Template → CompositionPlanner → section structure
 5. Per section: Noise + embeddings → UNet V2 denoising → Latent
 6. Latent → VAE Decoder → Mel spectrogram
-7. Mel → Vocos → Audio WAV
+7. Mel → HiFi-GAN → Audio WAV
 8. Concat all sections → Final audio
 
 ---
@@ -1177,7 +1177,7 @@ requests           # Ollama
 
 ## License
 
-GPL-2.0 License - use for your own projects!
+GPL-3.0 License - use for your own projects!
 
 ⚠️ **Legal notice:** Voice cloning may violate artists' voice likeness rights. Use only with your own voice or with the owner's consent.
 
