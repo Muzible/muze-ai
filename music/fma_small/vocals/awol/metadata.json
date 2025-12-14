@@ -1,0 +1,17 @@
+{
+  "artist": "AWOL",
+  "track_count": 2,
+  "embeddings": {
+    "mix": {
+      "count": 2,
+      "dim": 256,
+      "backend": "resemblyzer"
+    },
+    "separated": {
+      "count": 2,
+      "dim": 192,
+      "backend": "speechbrain_ecapa"
+    }
+  },
+  "vocal_samples": 0
+}

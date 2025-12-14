@@ -1,0 +1,13 @@
+{
+  "version": "1.0",
+  "total_artists": 1,
+  "artists": {
+    "awol": {
+      "name": "Awol",
+      "track_count": 2,
+      "has_mix_embedding": true,
+      "has_separated_embedding": true,
+      "path": "/Users/minus4/Kod/Bitbucket/muze-ai/music/fma_small/vocals/awol"
+    }
+  }
+}
