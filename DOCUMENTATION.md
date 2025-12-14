@@ -1,907 +1,350 @@
-# 🎵 Muzible Muze AI - Pełna Dokumentacja
+# Muzible Muze AI - Technical Documentation v2
 
 > **Text-to-Music Generation with Latent Diffusion & Voice Conditioning**
 
 ---
 
-## 📑 Spis treści
+## Table of Contents
 
-1. [Przegląd projektu](#przegląd-projektu)
-2. [Architektura systemu](#architektura-systemu)
-3. [Architektura V2](#architektura-v2)
-4. [Struktura plików](#struktura-plików)
-5. [Dataset Builder V2](#dataset-builder-v2)
-6. [Training Pipeline](#training-pipeline)
-7. [Scenariusze użycia](#scenariusze-użycia)
-8. [Inference - generowanie muzyki](#inference---generowanie-muzyki)
-9. [Model Size Configuration](#model-size-configuration)
+1. [System Architecture](#system-architecture)
+2. [V2 Architecture - Voice Stream Attention](#v2-architecture---voice-stream-attention)
+3. [Training Pipeline](#training-pipeline)
+4. [Dataset Format](#dataset-format)
+5. [Conditioning System](#conditioning-system)
+6. [File Structure](#file-structure)
+7. [Usage Scenarios](#usage-scenarios)
+8. [Inference - Music Generation](#inference---music-generation)
+9. [Detailed File Descriptions](#detailed-file-descriptions)
 10. [FAQ & Troubleshooting](#faq--troubleshooting)
+11. [Model Size Configuration](#model-size-configuration)
+12. [Requirements](#requirements)
 
 ---
 
-## Przegląd projektu
+## System Architecture
 
-**Muzible Muze AI** to system generowania muzyki z tekstu (text-to-music) wykorzystujący:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         MUZIBLE MUZE AI v2                                  │
+│                   Text-to-Music Generation Pipeline                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                  │
+│  │   INPUTS     │    │   ENCODERS   │    │   OUTPUTS    │                  │
+│  ├──────────────┤    ├──────────────┤    ├──────────────┤                  │
+│  │ Text Prompt  │───▶│ T5/CLAP      │───▶│              │                  │
+│  │ Voice Sample │───▶│ Resemblyzer  │───▶│  UNet V2     │                  │
+│  │ Style Ref    │───▶│ ECAPA-TDNN   │───▶│  (Diffusion) │──▶ Audio WAV    │
+│  │ Lyrics       │───▶│ Gruut/eSpeak │───▶│              │                  │
+│  └──────────────┘    └──────────────┘    └──────────────┘                  │
+│                                                                             │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                    CORE COMPONENTS                                    │  │
+│  ├──────────────────────────────────────────────────────────────────────┤  │
+│  │  AudioVAE (224M)  │  UNet V2 (722M-6.1B)  │  Vocos Vocoder          │  │
+│  │  - Mel → Latent   │  - Noise → Latent     │  - Mel → Waveform       │  │
+│  │  - Latent → Mel   │  - Voice Attention    │  - 44.1kHz output       │  │
+│  │  - KL + STFT Loss │  - Section Cond.      │  - High quality         │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-- **Latent Diffusion Model** - generuje muzykę w skompresowanej przestrzeni latentnej
-- **Audio VAE** - kompresuje spektrogramy mel do przestrzeni latentnej
-- **T5 Text Encoder** - enkoduje prompty tekstowe
-- **Voice Conditioning** - kondycjonuje generację stylem głosu artysty
-- **Vocos Vocoder** - konwertuje mel-spektrogramy na audio
-- **Voice Cloning (XTTS v2)** - klonuje głos do syntezy wokalu
+### Main Models
 
-### Dwa tryby głosu:
-
-| Tryb | Flaga | Opis | Legalność |
-|------|-------|------|-----------|
-| **Styl artysty** | `--artist_style AWOL` | Voice embedding wpływa na "vibe" generowanej muzyki | ✅ Legalne |
-| **Klonowanie głosu** | `--clone_voice_from ./vocal.wav` | Syntezuje wokal głosem z nagrania | ⚠️ Wymaga zgody |
+| Component | Parameters | Function |
+|-----------|------------|----------|
+| **AudioVAE** | 55-889M | Audio compression to latent space |
+| **UNet V2** | 722M-6.1B | Latent diffusion denoising |
+| **T5 Encoder** | 250M | Text prompt encoding |
+| **CLAP** | 600M | Audio-text joint embeddings |
+| **Vocos** | 13M | High-quality vocoder |
 
 ---
 
-## Architektura systemu
+## V2 Architecture - Voice Stream Attention
+
+### What is VoiceStreamAttention?
+
+**VoiceStreamAttention** is a **dedicated cross-attention mechanism** that allows the diffusion model to attend to voice embedding **separately** from text embedding.
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Text Prompt   │───▶│  T5 Encoder     │───▶│   Text Embed    │
-│                 │    │  (768-dim)      │    │   [B, seq, 768] │
-└─────────────────┘    └─────────────────┘    └────────┬────────┘
-                                                       │
-┌─────────────────┐    ┌─────────────────┐             │
-│  Voice Sample   │───▶│  Resemblyzer    │─────────────┤
-│  (optional)     │    │  (256-dim)      │             │
-└─────────────────┘    └─────────────────┘             │
-                                                       ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│     Noise       │───▶│   U-Net         │───▶│   Latent z      │
-│   [B, 8, H, W]  │    │  Diffusion      │    │   [B, 8, H, W]  │
-└─────────────────┘    │  (conditioned)  │    └────────┬────────┘
-                       └─────────────────┘             │
-                                                       ▼
-                       ┌─────────────────┐    ┌─────────────────┐
-                       │   VAE Decoder   │───▶│  Mel Spectrogram│
-                       │                 │    │   [B, 1, 80, T] │
-                       └─────────────────┘    └────────┬────────┘
-                                                       │
-                                                       ▼
-                       ┌─────────────────┐    ┌─────────────────┐
-                       │   Vocos         │───▶│   Audio WAV     │
-                       │   (24kHz)       │    │   [samples]     │
-                       └─────────────────┘    └─────────────────┘
+Standard Cross-Attention (v1):
+    Q = latent, K,V = text_embedding
+    
+V2 Voice Stream Attention:
+    Branch 1: Q = latent, K,V = text_embedding      → text_attn
+    Branch 2: Q = latent, K,V = voice_embedding     → voice_attn
+    Output: gate * voice_attn + (1-gate) * text_attn
 ```
 
-### Pipeline z voice cloning:
+### Why is it important?
+
+1. **Voice quality** - Model can "focus" on voice characteristics independently
+2. **Timbre control** - Voice gate allows dynamic balance between text and voice
+3. **Better disentanglement** - Voice separated from semantics
+
+### V2 Architecture Diagram
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  Reference WAV  │───▶│   Demucs        │───▶│   Vocals.wav    │
-│  (piosenka)     │    │  (htdemucs)     │    │   (czysty wokal)│
-└─────────────────┘    └─────────────────┘    └────────┬────────┘
-                                                       │
-                                                       ▼
-                       ┌─────────────────┐    ┌─────────────────┐
-                       │   XTTS v2       │───▶│   Synth Vocal   │
-                       │  (Coqui TTS)    │    │   (nowy tekst)  │
-                       └─────────────────┘    └────────┬────────┘
-                                                       │
-┌─────────────────┐                                    │
-│  Generated      │                                    │
-│  Instrumental   │────────────────────────────────────┤
-└─────────────────┘                                    │
-                                                       ▼
-                                              ┌─────────────────┐
-                                              │   Final Mix     │
-                                              │   (inst+vocal)  │
-                                              └─────────────────┘
+                    ┌─────────────────────────────────────────────┐
+                    │              UNet V2 Block                   │
+                    ├─────────────────────────────────────────────┤
+Input Latent ──────▶│  ResBlock  │  Self-Attn  │  Cross-Attn     │
+    [B,128,H,W]     │            │             │                  │
+                    │            │             │   ┌────────────┐ │
+                    │            │             │   │ Text K,V   │ │
+                    │            │             │   │ [B,768]    │ │
+                    │            │             │   └─────┬──────┘ │
+                    │            │             │         │        │
+                    │            │             │   ┌─────▼──────┐ │
+                    │            │             │   │ text_attn  │ │
+                    │            │             │   └─────┬──────┘ │
+                    │            │             │         │        │
+                    │            │             │   ┌─────▼──────┐ │
+                    │            │             │   │ GATED MIX  │◀── gate (learnable)
+                    │            │             │   └─────┬──────┘ │
+                    │            │             │         │        │
+                    │            │             │   ┌─────▼──────┐ │
+                    │            │             │   │ voice_attn │ │
+                    │            │             │   └─────┬──────┘ │
+                    │            │             │         │        │
+                    │            │             │   ┌─────▼──────┐ │
+                    │            │             │   │ Voice K,V  │ │
+                    │            │             │   │ [B,256]    │ │
+                    │            │             │   └────────────┘ │
+                    └─────────────────────────────────────────────┘
+                                        │
+                                        ▼
+                              Output Latent [B,128,H,W]
 ```
 
----
+### VoiceEmbeddingFusion (v2)
 
-## 🎤 Architektura V2 - Voice Stream Attention
+In v2, we use **two voice embeddings**:
 
-### Dlaczego Voice Stream?
-
-W v1 voice embedding był tylko "dodany" do conditioning (`cond = t_emb + voice_cond`). 
-To powodowało, że **wokal był słabo zintegrowany z muzyką** - diffusion "widział" głos tylko powierzchownie.
-
-**V2 wprowadza Voice Stream Attention** - dedykowany cross-attention na każdym poziomie U-Net:
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                          JEDEN PROCES DIFFUSION                               │
-│                                                                              │
-│   ┌─────────────┐                                      ┌─────────────┐      │
-│   │ Voice Embed │──────────────────────────────────────│ Voice Embed │      │
-│   │   [B, 256]  │                                      │   [B, 256]  │      │
-│   └──────┬──────┘                                      └──────┬──────┘      │
-│          │                                                    │              │
-│          │ 🎤 Voice Stream                                   │ 🎤 Voice    │
-│          │    Attention                                      │    Stream    │
-│          ▼                                                    ▼              │
-│   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐ ┌─────────────┐  │
-│   │  Down Block │────▶│  Mid Block  │────▶│  Up Block   │─│  Up Block   │  │
-│   │  (res 2)    │     │             │     │  (res 4)    │ │  (res 2)    │  │
-│   └─────────────┘     └─────────────┘     └─────────────┘ └─────────────┘  │
-│          ▲                   ▲                   ▲              ▲           │
-│          │                   │                   │              │           │
-│   ┌──────┴──────┐     ┌──────┴──────┐     ┌──────┴──────┐      │           │
-│   │Text Attn    │     │Text Attn    │     │Text Attn    │      │           │
-│   │(SpatialTF)  │     │(SpatialTF)  │     │(SpatialTF)  │      │           │
-│   └─────────────┘     └─────────────┘     └─────────────┘      │           │
-│                                                                 │           │
-│                            ┌────────────────────────────────────┘           │
-│                            │                                                │
-│                            ▼                                                │
-│                    ┌───────────────┐                                        │
-│                    │ Unified Latent│                                        │
-│                    │ (vocal+music) │                                        │
-│                    │  [B, 8, H, W] │                                        │
-│                    └───────────────┘                                        │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Jak działa VoiceStreamAttention:
+| Embedding | Dimension | Model | Characteristics |
+|-----------|-----------|-------|-----------------|
+| **Resemblyzer** | 256 | GE2E | General speaker verification |
+| **ECAPA-TDNN** | 192 | SpeechBrain | Better for singing voice |
 
 ```python
-class VoiceStreamAttention(nn.Module):
-    """
-    Gated cross-attention: features ← voice_embedding
-    
-    1. Features są query (spatial flatten → sequence)
-    2. Voice embedding jest key+value
-    3. Cross-attention "informuje" każdy pixel o głosie
-    4. Gated fusion: x = x + gate * attended_voice
-    """
-    
-    def forward(self, x, voice_emb):
-        # x: [B, C, H, W] - feature map
-        # voice_emb: [B, voice_dim] - voice embedding
-        
-        # Flatten spatial → sequence dla attention
-        b, c, h, w = x.shape
-        q = x.flatten(2).transpose(1, 2)  # [B, H*W, C]
-        
-        # Voice jako key/value
-        kv = self.voice_proj(voice_emb)   # [B, C]
-        kv = kv.unsqueeze(1)              # [B, 1, C]
-        
-        # Cross-attention: każdy pixel "patrzy" na voice
-        attended = self.cross_attn(q, kv, kv)  # [B, H*W, C]
-        
-        # Reshape back to spatial
-        attended = attended.transpose(1, 2).reshape(b, c, h, w)
-        
-        # Gated fusion (model uczy się ile voice influence)
-        gate = self.voice_gate.sigmoid()
-        return x + gate * attended
+# Fusion
+voice_fused = VoiceEmbeddingFusion(
+    resemblyzer_embed,  # [B, 256]
+    ecapa_embed         # [B, 192]
+)
+# Output: [B, 256] - weighted projection
 ```
-
-### Porównanie v1 vs v2:
-
-| Aspekt | V1 | V2 (Voice Stream) |
-|--------|----|--------------------|
-| Voice integration | Tylko global addition | Cross-attention na każdym poziomie |
-| Voice influence | Słaba, "hint" | Silna, każdy pixel "widzi" voice |
-| Vocal-music coherence | Wokal czasem "obok" muzyki | Wokal zintegrowany z muzyką |
-| Learnable | Nie | Tak (gated, model uczy się siły) |
-
-### Użycie w inference:
-
-```bash
-# V2 automatycznie używa Voice Stream
-python inference_v2.py \
-    --checkpoint checkpoints/diffusion_v2_epoch_100.pt \
-    --prompt "Uplifting electronic pop with female vocals" \
-    --style_of "Billie Eilish" \
-    --output output/billie_style.wav
-```
-
----
-
-## Dataset Builder V2
-
-> 📘 **Pełna dokumentacja:** [docs_v2/DATASET_BUILDER.md](docs_v2/DATASET_BUILDER.md)
-
-### Quick Start
-
-```bash
-# Pełny build z GPU
-python build_dataset_v2.py \
-    --audio_dir ./music/fma_small \
-    --output ./data_v2/dataset.json \
-    --device cuda \
-    --batch_size 4
-```
-
-### Ekstrakcja cech (v3.1)
-
-| Kategoria | Cechy | Model/Narzędzie | Wymiar |
-|-----------|-------|-----------------|--------|
-| 🎵 Audio | tempo, key, energy, chroma, mel | librosa | - |
-| 🎤 Voice | voice embedding | Resemblyzer | 256-dim |
-| 🎤 Voice | ECAPA embedding | ECAPA-TDNN | 192-dim |
-| 📝 Lyrics | transkrypcja, język | Whisper large-v3 | - |
-| 🔤 Phonemes | IPA, per-word, timestamps | Gruut/espeak-ng | - |
-| 🎼 Segments | verse/chorus/bridge | custom annotator | - |
-| 🧠 CLAP | audio-text embedding | LAION CLAP | 512-dim |
-| 🎸 F0 | fundamental frequency | CREPE/pYIN | - |
-| 🌊 Vibrato | rate, extent | custom | 64-dim |
-| 💨 Breath | positions | custom | 32-dim |
-| 🤖 Prompts | LLM-enhanced | GPT-4o-mini | - |
-
-### Szacunkowe czasy
-
-| Hardware | Czas/track | 1000 tracków |
-|----------|------------|--------------|
-| CPU only | ~70s | ~19h |
-| RTX 3080 | ~8s | ~2.2h |
-| RTX 4090 | ~5s | ~1.4h |
 
 ---
 
 ## Training Pipeline
 
-### Architektura 3-fazowa
+### Phase Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    MUZE AI TRAINING PIPELINE                        │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ┌─────────────────┐                                                │
-│  │   PHASE 1       │    Audio → Mel → Encoder → z → Decoder → Mel  │
-│  │   Audio VAE     │    Loss: Reconstruction + KL + Multi-STFT     │
-│  │   (~224M)       │                                                │
-│  └────────┬────────┘                                                │
-│           │                                                         │
-│           │ vae_checkpoint                                          │
-│           ▼                                                         │
-│  ┌─────────────────┐                                                │
-│  │   PHASE 2       │    Track features → Composition plan          │
-│  │   Composition   │    (verse/chorus/bridge scheduling)           │
-│  │   Planner       │                                                │
-│  └────────┬────────┘                                                │
-│           │                                                         │
-│           │ composition_checkpoint                                  │
-│           ▼                                                         │
-│  ┌─────────────────┐                                                │
-│  │   PHASE 3       │    Noise + Conditions → UNet → Latent → VAE   │
-│  │   LDM v2        │    Conditions: text, voice, section, F0...    │
-│  │   (~1.3B-6B)    │    Loss: Diffusion + Phoneme Duration         │
-│  └─────────────────┘                                                │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                        TRAINING PIPELINE v2                                 │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Phase 1: VAE (Audio Compression)                                          │
+│  ────────────────────────────────                                          │
+│  Audio WAV → Mel Spectrogram → Encoder → μ, σ → z (latent) → Decoder → Mel │
+│                                                                            │
+│  Loss: MSE(mel, mel_recon) + β*KL(z) + STFT_loss                          │
+│  Target: Reconstruct audio with minimal latent dim (128)                   │
+│                                                                            │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Phase 2: Composition Planner (Optional)                                   │
+│  ───────────────────────────────────────                                   │
+│  Track features → MLP → Section plan (verse, chorus, bridge, etc.)         │
+│                                                                            │
+│  Loss: CrossEntropy(predicted_sections, ground_truth_sections)             │
+│  Target: Learn song structure from metadata                                │
+│                                                                            │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Phase 3: Latent Diffusion Model (LDM)                                     │
+│  ─────────────────────────────────────                                     │
+│  Noise z_T → UNet V2 (conditioned) → ... → z_0 → VAE Decode → Audio        │
+│                                                                            │
+│  Conditioning:                                                             │
+│  - Text: T5/CLAP embedding [768]                                           │
+│  - Voice: Resemblyzer [256] + ECAPA [192]                                  │
+│  - Section: type, position, energy, tempo, key                             │
+│  - Audio: CLAP audio embedding [512]                                       │
+│  - Beat/Chord/Phoneme encoders                                             │
+│                                                                            │
+│  Loss: MSE(predicted_noise, actual_noise) + cfg_loss                       │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
----
-
-## 🧠 LDM v2 - Szczegółowy Diagram Training Pipeline
+### LDM Training with All Conditioning
 
 ```
-╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
-║                                    🎵 LDM V2 TRAINING PIPELINE                                               ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                                              ║
-║  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ ║
-║  │                                        📁 DATASET (JSON)                                                │ ║
-║  │                                                                                                         │ ║
-║  │  SegmentedTrack {                                                                                       │ ║
-║  │    "audio_path": "./music/fma/001/track.mp3",                                                          │ ║
-║  │    "prompt": "Energetic electronic track with heavy bass...",                                          │ ║
-║  │    "tempo": 128.0,                                                                                      │ ║
-║  │    "key": "C minor",                         # → key_idx 0-23                                          │ ║
-║  │    "genre": "electronic",                    # → genres list                                           │ ║
-║  │    "has_vocals": true,                       # bool                                                    │ ║
-║  │    "lyrics": "Feel the bass drop...",                                                                  │ ║
-║  │    "loudness": -14.2,                        # LUFS dB                                                 │ ║
-║  │    "sentiment_score": 0.7,                   # -1 to 1                                                 │ ║
-║  │    "artist": "Artist Name",                  # → hash bucket                                           │ ║
-║  │    "voice_embedding": [256-dim],             # Resemblyzer (from mix)                                  │ ║
-║  │    "ecapa_embedding": [192-dim],             # ECAPA-TDNN (from separated vocals)                      │ ║
-║  │    "clap_audio_embedding": [512-dim],        # CLAP audio                                              │ ║
-║  │    "clap_text_embedding": [512-dim],         # CLAP text (from prompt)                                 │ ║
-║  │    "f0_contour": [T frames],                 # Fundamental frequency Hz                                │ ║
-║  │    "f0_coarse": [T frames],                  # Discrete pitch bins (84)                                │ ║
-║  │    "f0_voiced_mask": [T frames],             # Voiced mask                                             │ ║
-║  │    "vibrato_rate": 5.5,                      # Hz                                                      │ ║
-║  │    "vibrato_depth": 30,                      # cents                                                   │ ║
-║  │    "vibrato_extent": 0.8,                    # 0-1                                                     │ ║
-║  │    "breath_positions": [2.1, 5.3, ...],      # Breath timings in seconds                               │ ║
-║  │    "phonemes_ipa": "ˈfiːl ðə beɪs drɒp",    # IPA string                                              │ ║
-║  │    "phoneme_timestamps": [{phoneme, start, end}...],                                                   │ ║
-║  │    "num_beats": 32,                          # Beat count                                              │ ║
-║  │    "beat_positions": [0.0, 0.5, 1.0, ...],   # Beat times                                              │ ║
-║  │    "time_signature": "4/4",                  # Time signature                                          │ ║
-║  │    "chord_progression": ["Cm", "Gm", ...],   # Chords                                                  │ ║
-║  │    "segments": [                                                                                        │ ║
-║  │      {"type": "intro", "start": 0.0, "end": 8.0},                                                      │ ║
-║  │      {"type": "verse", "start": 8.0, "end": 24.0},                                                     │ ║
-║  │      {"type": "chorus", "start": 24.0, "end": 40.0},                                                   │ ║
-║  │      # types: intro/verse/pre_chorus/chorus/post_chorus/bridge/                                        │ ║
-║  │      #        instrumental/solo/breakdown/buildup/drop/outro/unknown                                   │ ║
-║  │    ]                                                                                                    │ ║
-║  │  }                                                                                                      │ ║
-║  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ ║
-║                                                    │                                                         ║
-║                                                    ▼                                                         ║
-║  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ ║
-║  │                                   📦 SegmentedMusicDataset.__getitem__()                                │ ║
-║  │                                                                                                         │ ║
-║  │  1. Load audio segment → Mel spectrogram [1, 128, T]                                                   │ ║
-║  │  2. VAE encode → Latent z [latent_dim, H, W]                                                           │ ║
-║  │  3. Prepare conditioning tensors:                                                                       │ ║
-║  │                                                                                                         │ ║
-║  │     📝 Semantic:                                                                                        │ ║
-║  │     • text_embedding: T5/CLAP [768 or 512]                                                             │ ║
-║  │     • clap_audio_embedding: CLAP audio [512]                                                           │ ║
-║  │     • clap_text_embedding: CLAP text [512]                                                             │ ║
-║  │                                                                                                         │ ║
-║  │     🎤 Voice:                                                                                           │ ║
-║  │     • voice_embedding: Resemblyzer [256]                                                               │ ║
-║  │     • ecapa_embedding: ECAPA-TDNN [192]                                                                │ ║
-║  │                                                                                                         │ ║
-║  │     🎼 Structure (13 types):                                                                            │ ║
-║  │     • section_type: intro/verse/pre_chorus/chorus/post_chorus/bridge/                                  │ ║
-║  │                     instrumental/solo/breakdown/buildup/drop/outro/unknown                              │ ║
-║  │     • position_in_song: float [0.0-1.0]                                                                │ ║
-║  │     • tempo: normalized float                                                                          │ ║
-║  │     • key_idx: int [0-23]                                                                              │ ║
-║  │                                                                                                         │ ║
-║  │     🔊 Audio metadata (v3):                                                                             │ ║
-║  │     • loudness: dB, energy: float, has_vocals: bool                                                    │ ║
-║  │     • sentiment_score: [-1, 1], genres: List[str], artist: str                                         │ ║
-║  │                                                                                                         │ ║
-║  │     🥁 Beat/Chord (v2):                                                                                 │ ║
-║  │     • num_beats, beat_positions, time_signature, current_chord                                         │ ║
-║  │                                                                                                         │ ║
-║  │     🎵 Pitch (v3):                                                                                      │ ║
-║  │     • f0: [T_f0], f0_coarse: [T_f0], f0_voiced_mask: [T_f0]                                           │ ║
-║  │                                                                                                         │ ║
-║  │     🎤 Singing (v3.1):                                                                                  │ ║
-║  │     • vibrato_rate/depth/extent, breath_positions, phoneme_timestamps                                  │ ║
-║  │                                                                                                         │ ║
-║  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ ║
-║                                                    │                                                         ║
-║                                                    ▼                                                         ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                        🏋️ DIFFUSION TRAINER                                                 ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                                              ║
-║  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ ║
-║  │                                    NOISE SCHEDULING                                                     │ ║
-║  │                                                                                                         │ ║
-║  │   Latent z₀ [B, 128, H, W]                                                                             │ ║
-║  │        │                                                                                                │ ║
-║  │        │  t ~ Uniform(0, T)   ε ~ N(0, I)                                                              │ ║
-║  │        │                                                                                                │ ║
-║  │        ▼                                                                                                │ ║
-║  │   zₜ = √αₜ · z₀ + √(1-αₜ) · ε    (Forward diffusion)                                                  │ ║
-║  │                                                                                                         │ ║
-║  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ ║
-║                                                    │                                                         ║
-║                                                    ▼                                                         ║
-║  ┌──────────────────────────────────────── CONDITIONING PREPARATION ────────────────────────────────────┐   ║
-║  │                                                                                                       │   ║
-║  │  ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐ │   ║
-║  │  │                           1️⃣ TEXT CONDITIONING (semantic control)                               │ │   ║
-║  │  │                                                                                                 │ │   ║
-║  │  │   prompt "Energetic electronic..." ──→ T5 Encoder ──→ text_emb [B, seq, 768]                   │ │   ║
-║  │  │                                           │                                                     │ │   ║
-║  │  │                              ┌────────────┴────────────┐                                        │ │   ║
-║  │  │                              │ Cross-attention in UNet │                                        │ │   ║
-║  │  │                              │ Q: features, K/V: text  │                                        │ │   ║
-║  │  │                              └─────────────────────────┘                                        │ │   ║
-║  │  └─────────────────────────────────────────────────────────────────────────────────────────────────┘ │   ║
-║  │                                                                                                       │   ║
-║  │  ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐ │   ║
-║  │  │                          2️⃣ VOICE CONDITIONING (speaker identity)                               │ │   ║
-║  │  │                                                                                                 │ │   ║
-║  │  │   voice_emb [B, 256] ─────┐     ┌────────────────────────────────────────────────────┐         │ │   ║
-║  │  │   (Resemblyzer - mix)     │     │            VoiceStreamAttention                    │         │ │   ║
-║  │  │                           ├────▶│  Gated cross-attention at each UNet level         │         │ │   ║
-║  │  │   ecapa_emb [B, 192] ─────┘     │  x = x + gate · CrossAttn(x, voice)               │         │ │   ║
-║  │  │   (ECAPA - vocals)              └────────────────────────────────────────────────────┘         │ │   ║
-║  │  │                                                                                                 │ │   ║
-║  │  │   💡 Voice Stream = dedicated cross-attention at EVERY level for deep voice integration        │ │   ║
-║  │  └─────────────────────────────────────────────────────────────────────────────────────────────────┘ │   ║
-║  │                                                                                                       │   ║
-║  │  ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐ │   ║
-║  │  │                           3️⃣ CLAP CONDITIONING (audio-text alignment)                           │ │   ║
-║  │  │                                                                                                 │ │   ║
-║  │  │   clap_audio_emb [B, 512] ──→ Project ──→ [B, 512] ──→ Add to time embedding                   │ │   ║
-║  │  │                                                                                                 │ │   ║
-║  │  │   💡 CLAP provides audio-grounded semantic information                                          │ │   ║
-║  │  └─────────────────────────────────────────────────────────────────────────────────────────────────┘ │   ║
-║  │                                                                                                       │   ║
-║  │  ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐ │   ║
-║  │  │                           4️⃣ SECTION CONDITIONING (structure awareness)                         │ │   ║
-║  │  │                                                                                                 │ │   ║
-║  │  │   section_type [one-hot 13]──┬──→ SectionConditioningModule ──→ [B, 1024]                      │ │   ║
-║  │  │   position_in_song [float]  ─┤                                      │                           │ │   ║
-║  │  │   energy, tempo [float]     ─┤                                      ▼                           │ │   ║
-║  │  │   key_idx [int 0-23]        ─┤                              Add to time embedding               │ │   ║
-║  │  │   loudness, has_vocals      ─┤                                                                  │ │   ║
-║  │  │   sentiment, genres, artist ─┘                                                                  │ │   ║
-║  │  │                                                                                                 │ │   ║
-║  │  │   💡 Section = intro/verse/pre_chorus/chorus/post_chorus/bridge/instrumental/                   │ │   ║
-║  │  │                solo/breakdown/buildup/drop/outro/unknown                                        │ │   ║
-║  │  └─────────────────────────────────────────────────────────────────────────────────────────────────┘ │   ║
-║  │                                                                                                       │   ║
-║  │  ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐ │   ║
-║  │  │                           5️⃣ PITCH/F0 CONDITIONING (melody)                                     │ │   ║
-║  │  │                                                                                                 │ │   ║
-║  │  │   f0_contour [B, T] ──→ F0Encoder ──→ [B, 64, T'] ──→ Concatenate to UNet features             │ │   ║
-║  │  │                             │                                                                   │ │   ║
-║  │  │                             │  ┌──────────────────────────────────────────────────┐             │ │   ║
-║  │  │                             └──│ Log scale + Conv1D + Interpolate to match size  │             │ │   ║
-║  │  │                                └──────────────────────────────────────────────────┘             │ │   ║
-║  │  └─────────────────────────────────────────────────────────────────────────────────────────────────┘ │   ║
-║  │                                                                                                       │   ║
-║  │  ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐ │   ║
-║  │  │                           6️⃣ SINGING CONDITIONING (vibrato + breath + phonemes)                 │ │   ║
-║  │  │                                                                                                 │ │   ║
-║  │  │   vibrato_features [B, 64] ──→ VibratoEncoder ──→ [B, 64] ──┐                                  │ │   ║
-║  │  │                                                             │                                   │ │   ║
-║  │  │   breath_positions [B, 32] ──→ BreathEncoder ──→ [B, 32] ───┼──→ Concat → Add to time emb      │ │   ║
-║  │  │                                                             │                                   │ │   ║
-║  │  │   phoneme_seq [B, N, 64] ──→ PhonemeEncoder ──→ [B, N, 64] ─┘                                  │ │   ║
-║  │  │                                                                                                 │ │   ║
-║  │  └─────────────────────────────────────────────────────────────────────────────────────────────────┘ │   ║
-║  │                                                                                                       │   ║
-║  └───────────────────────────────────────────────────────────────────────────────────────────────────────┘   ║
-║                                                    │                                                         ║
-║                                                    ▼                                                         ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                     🧠 UNet V2 FORWARD PASS                                                  ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                                              ║
-║  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ ║
-║  │                                                                                                         │ ║
-║  │   zₜ [B, 128, H, W]     t_emb [B, time_dim]     context [B, seq, 768]     voice [B, 256]               │ ║
-║  │        │                      │                       │                       │                         │ ║
-║  │        │                      │                       │                       │                         │ ║
-║  │        ▼                      ▼                       │                       │                         │ ║
-║  │   ╔═══════════════════════════════════════════════════════════════════════════════════════════════╗     │ ║
-║  │   ║                              ENCODER (Downsample)                                             ║     │ ║
-║  │   ╠═══════════════════════════════════════════════════════════════════════════════════════════════╣     │ ║
-║  │   ║                                                                                               ║     │ ║
-║  │   ║   ┌─────────────────────────────────────────────────────────────────────────────────────┐     ║     │ ║
-║  │   ║   │                            Down Block (level 0)                                     │     ║     │ ║
-║  │   ║   │                                                                                     │     ║     │ ║
-║  │   ║   │   [B, 128, H, W] ──→ ResBlock(t_emb) ──→ ResBlock(t_emb)                           │     ║     │ ║
-║  │   ║   │                            │                                                        │     ║     │ ║
-║  │   ║   │                            ▼                                                        │     ║     │ ║
-║  │   ║   │   🎤 VoiceStreamAttention ← voice_emb                                              │     ║     │ ║
-║  │   ║   │                            │                                                        │     ║     │ ║
-║  │   ║   │                            ▼                                                        │     ║     │ ║
-║  │   ║   │                      Downsample 2×                                                  │     ║     │ ║
-║  │   ║   │                                                                                     │     ║     │ ║
-║  │   ║   └─────────────────────────────────────────────────────────────────────────────────────┘     ║     │ ║
-║  │   ║                                         │                                                     ║     │ ║
-║  │   ║                                         ▼                                                     ║     │ ║
-║  │   ║   ┌─────────────────────────────────────────────────────────────────────────────────────┐     ║     │ ║
-║  │   ║   │                            Down Block (level 1) + SpatialTransformer                │     ║     │ ║
-║  │   ║   │                                                                                     │     ║     │ ║
-║  │   ║   │   [B, 320, H/2, W/2] ──→ ResBlock ──→ SpatialTransformer ←─ context (text)         │     ║     │ ║
-║  │   ║   │                                              │                                      │     ║     │ ║
-║  │   ║   │                     ┌─────────────────────────┴─────────────────────────┐           │     ║     │ ║
-║  │   ║   │                     │          SpatialTransformer                       │           │     ║     │ ║
-║  │   ║   │                     │  1. Self-Attention (spatial)                      │           │     ║     │ ║
-║  │   ║   │                     │  2. Cross-Attention (Q: features, K/V: text)      │           │     ║     │ ║
-║  │   ║   │                     │  3. FeedForward                                   │           │     ║     │ ║
-║  │   ║   │                     └───────────────────────────────────────────────────┘           │     ║     │ ║
-║  │   ║   │                                              │                                      │     ║     │ ║
-║  │   ║   │   🎤 VoiceStreamAttention ← voice_emb       │                                      │     ║     │ ║
-║  │   ║   │                                              ▼                                      │     ║     │ ║
-║  │   ║   │                                       Downsample 2×                                 │     ║     │ ║
-║  │   ║   │                                                                                     │     ║     │ ║
-║  │   ║   └─────────────────────────────────────────────────────────────────────────────────────┘     ║     │ ║
-║  │   ║                                         │                                                     ║     │ ║
-║  │   ║                            ... more down blocks ...                                           ║     │ ║
-║  │   ║                                                                                               ║     │ ║
-║  │   ╚═══════════════════════════════════════════════════════════════════════════════════════════════╝     │ ║
-║  │                                         │                                                               │ ║
-║  │                                         ▼                                                               │ ║
-║  │   ╔═══════════════════════════════════════════════════════════════════════════════════════════════╗     │ ║
-║  │   ║                              MIDDLE BLOCK (Bottleneck)                                        ║     │ ║
-║  │   ╠═══════════════════════════════════════════════════════════════════════════════════════════════╣     │ ║
-║  │   ║                                                                                               ║     │ ║
-║  │   ║   [B, 1280, H/8, W/8] ──→ ResBlock ──→ SpatialTransformer ──→ ResBlock                       ║     │ ║
-║  │   ║                                              │                                                ║     │ ║
-║  │   ║                         🎤 VoiceStreamAttention ← voice_emb                                  ║     │ ║
-║  │   ║                                                                                               ║     │ ║
-║  │   ╚═══════════════════════════════════════════════════════════════════════════════════════════════╝     │ ║
-║  │                                         │                                                               │ ║
-║  │                                         ▼                                                               │ ║
-║  │   ╔═══════════════════════════════════════════════════════════════════════════════════════════════╗     │ ║
-║  │   ║                              DECODER (Upsample) + Skip Connections                            ║     │ ║
-║  │   ╠═══════════════════════════════════════════════════════════════════════════════════════════════╣     │ ║
-║  │   ║                                                                                               ║     │ ║
-║  │   ║   ┌─────────────────────────────────────────────────────────────────────────────────────┐     ║     │ ║
-║  │   ║   │                            Up Block (level 2) + Skip                                │     ║     │ ║
-║  │   ║   │                                                                                     │     ║     │ ║
-║  │   ║   │   [middle] + [skip from down_2] ──→ Concat ──→ ResBlock ──→ SpatialTransformer     │     ║     │ ║
-║  │   ║   │                                                       │                             │     ║     │ ║
-║  │   ║   │   🎤 VoiceStreamAttention ← voice_emb                │                             │     ║     │ ║
-║  │   ║   │                                                       ▼                             │     ║     │ ║
-║  │   ║   │                                                 Upsample 2×                         │     ║     │ ║
-║  │   ║   │                                                                                     │     ║     │ ║
-║  │   ║   └─────────────────────────────────────────────────────────────────────────────────────┘     ║     │ ║
-║  │   ║                                         │                                                     ║     │ ║
-║  │   ║                            ... more up blocks ...                                             ║     │ ║
-║  │   ║                                                                                               ║     │ ║
-║  │   ╚═══════════════════════════════════════════════════════════════════════════════════════════════╝     │ ║
-║  │                                         │                                                               │ ║
-║  │                                         ▼                                                               │ ║
-║  │   ┌─────────────────────┐                                                                               │ ║
-║  │   │  Final Conv         │ ──→ ε̂ [B, 128, H, W]  (predicted noise)                                      │ ║
-║  │   └─────────────────────┘                                                                               │ ║
-║  │                                                                                                         │ ║
-║  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ ║
-║                                       │                                                                      ║
-║                                       ▼                                                                      ║
-║  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ ║
-║  │                                    📉 LOSS COMPUTATION                                                  │ ║
-║  │                                                                                                         │ ║
-║  │   ε (ground truth noise)                                                                                │ ║
-║  │        │                                                                                                │ ║
-║  │        │  ┌──────────────────────────────────────────────────────────────────────────────┐              │ ║
-║  │        │  │                         Diffusion Loss                                       │              │ ║
-║  │        │  │                                                                              │              │ ║
-║  │        │  │  L_diffusion = MSE(ε, ε̂)    (Mean Squared Error between noise)             │              │ ║
-║  │        │  │                                                                              │              │ ║
-║  │        │  │  + Optional: v-prediction loss, SNR weighting                               │              │ ║
-║  │        │  └──────────────────────────────────────────────────────────────────────────────┘              │ ║
-║  │        ▼                                                                                                │ ║
-║  │   loss = L_diffusion                                                                                    │ ║
-║  │                                                                                                         │ ║
-║  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ ║
-║                                       │                                                                      ║
-║                                       ▼                                                                      ║
-║  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ ║
-║  │                                    ⚡ OPTIMIZATION                                                       │ ║
-║  │                                                                                                         │ ║
-║  │   loss.backward()  ──→  (AMP scaler if mixed_precision)                                                │ ║
-║  │        │                                                                                                │ ║
-║  │        ▼                                                                                                │ ║
-║  │   grad_clip (max_norm=1.0)                                                                              │ ║
-║  │        │                                                                                                │ ║
-║  │        ▼                                                                                                │ ║
-║  │   optimizer.step() (AdamW, lr=1e-4, weight_decay=0.01)                                                  │ ║
-║  │        │                                                                                                │ ║
-║  │        ▼                                                                                                │ ║
-║  │   EMA update (momentum=0.9999)                                                                          │ ║
-║  │                                                                                                         │ ║
-║  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ ║
-║                                                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
-
-╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
-║                                    📊 LDM V2 CONDITIONING SUMMARY (v3.1)                                     ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                                              ║
-║  ┌─────────────────────────────┬──────────────────────────────┬───────────────────────────────────────────┐  ║
-║  │         SOURCE              │          PROCESSING          │              DESTINATION                  │  ║
-║  ├─────────────────────────────┼──────────────────────────────┼───────────────────────────────────────────┤  ║
-║  │                             │                              │                                           │  ║
-║  │  📝 TEXT:                   │                              │                                           │  ║
-║  │  prompt                     │  T5 / CLAP encoder           │  Cross-attention in SpatialTransformer   │  ║
-║  │                             │  [768 or 512 dim]            │                                           │  ║
-║  │                             │                              │                                           │  ║
-║  │  🎤 VOICE (dual):           │                              │                                           │  ║
-║  │  voice_embedding [256]      │  VoiceStreamAttention        │  Gated cross-attn at EVERY level         │  ║
-║  │  (Resemblyzer - mix)        │  + VoiceEmbeddingFusion      │  (fused 256+192 → 256)                    │  ║
-║  │  voice_emb_separated [192]  │                              │                                           │  ║
-║  │  (ECAPA-TDNN - vocals)      │                              │                                           │  ║
-║  │                             │                              │                                           │  ║
-║  │  🔊 CLAP (audio+text):      │                              │                                           │  ║
-║  │  clap_audio_embedding [512] │  ClapProjection (fused)      │  → 128-dim added to section cond          │  ║
-║  │  clap_text_embedding [512]  │                              │                                           │  ║
-║  │                             │                              │                                           │  ║
-║  │  🎼 STRUCTURE (v3):         │                              │                                           │  ║
-║  │  section_type [one-hot 13]  │  SectionConditioningModule   │  → 1024-dim conditioning vector           │  ║
-║  │  position [float]           │  (fusion MLP)                │  Added to time embedding                  │  ║
-║  │  energy, tempo [float]      │                              │                                           │  ║
-║  │  key_idx [int 0-23]         │                              │                                           │  ║
-║  │  loudness [dB]              │                              │                                           │  ║
-║  │  has_vocals [bool]          │                              │                                           │  ║
-║  │  sentiment_score [-1..1]    │                              │                                           │  ║
-║  │  genres [List[List[str]]]   │                              │                                           │  ║
-║  │  artists [List[str]]        │                              │                                           │  ║
-║  │                             │                              │                                           │  ║
-║  │  🥁 BEAT (v2):              │                              │                                           │  ║
-║  │  num_beats [int]            │  BeatEmbedding               │  → 64-dim                                 │  ║
-║  │  beat_positions [List]      │                              │                                           │  ║
-║  │  time_signature [str]       │                              │                                           │  ║
-║  │                             │                              │                                           │  ║
-║  │  🎸 CHORD (v2):             │                              │                                           │  ║
-║  │  current_chord [str]        │  ChordEmbedding              │  → 64-dim                                 │  ║
-║  │                             │                              │                                           │  ║
-║  │  🎵 MELODY (v3):            │                              │                                           │  ║
-║  │  f0 [B, T] Hz               │  PitchEncoder                │  → 64-dim                                 │  ║
-║  │  f0_coarse [B, T] bins      │  (continuous + discrete)     │  Concatenated to UNet features            │  ║
-║  │  f0_voiced_mask [B, T]      │                              │                                           │  ║
-║  │                             │                              │                                           │  ║
-║  │  🎤 SINGING (v3.1):         │                              │                                           │  ║
-║  │  vibrato_rate/depth/extent  │  VibratoEncoder              │  → 64-dim                                 │  ║
-║  │  breath_positions [List]    │  BreathEncoder               │  → 32-dim                                 │  ║
-║  │  phoneme_timestamps [List]  │  PhonemeTimestampEncoder     │  → 64-dim                                 │  ║
-║  │  phonemes_ipa [str]         │  PhonemeEncoder              │  → 128-dim + durations                    │  ║
-║  │                             │                              │                                           │  ║
-║  └─────────────────────────────┴──────────────────────────────┴───────────────────────────────────────────┘  ║
-║                                                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+┌────────────────────────────────────────────────────────────────────────────┐
+│                    LDM v2 TRAINING - FULL CONDITIONING                     │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  INPUTS (per batch):                                                       │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │ audio_path: "music/fma_small/000/000123.mp3"                         │  │
+│  │ prompt: "Energetic rock with electric guitar and drums"              │  │
+│  │ section_type: "chorus"                                               │  │
+│  │ position: 0.35                                                       │  │
+│  │ energy: 0.82                                                         │  │
+│  │ tempo: 128.0                                                         │  │
+│  │ key: "C major"                                                       │  │
+│  │ voice_embedding: [256-dim tensor]                                    │  │
+│  │ ecapa_embedding: [192-dim tensor]                                    │  │
+│  │ clap_audio_embedding: [512-dim tensor]                               │  │
+│  │ clap_text_embedding: [512-dim tensor]                                │  │
+│  │ num_beats: 64                                                        │  │
+│  │ beat_positions: [[0.0, 0.47], [0.47, 0.94], ...]                     │  │
+│  │ current_chord: "C:maj"                                               │  │
+│  │ phonemes_ipa: "ðɪs ɪz ə tɛst"                                        │  │
+│  │ f0_contour: [440.0, 442.1, ...]                                      │  │
+│  │ vibrato_rate, vibrato_depth, breath_positions, ...                   │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                            │
+│  PROCESSING:                                                               │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                                                                      │  │
+│  │  1. Load audio → Mel spectrogram                                     │  │
+│  │  2. VAE.encode(mel) → z_0 (latent)                                   │  │
+│  │  3. Sample timestep t ~ Uniform(0, T)                                │  │
+│  │  4. Add noise: z_t = √ᾱₜ·z_0 + √(1-ᾱₜ)·ε                            │  │
+│  │  5. Encode conditioning:                                             │  │
+│  │     - text_embed = T5(prompt)           [768]                        │  │
+│  │     - voice_fused = Fusion(voice, ecapa) [256]                       │  │
+│  │     - section_cond = SectionModule(...)  [1024]                      │  │
+│  │  6. UNet forward: ε_θ = UNet(z_t, t, text_embed, voice_fused, ...)  │  │
+│  │  7. Loss = MSE(ε_θ, ε)                                               │  │
+│  │                                                                      │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🎵 LDM V2 - Inference Pipeline
+## Dataset Format
 
-```
-╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
-║                                    🎵 LDM V2 INFERENCE PIPELINE                                              ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                                              ║
-║  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ ║
-║  │                                        📝 USER INPUT                                                    │ ║
-║  │                                                                                                         │ ║
-║  │  python inference_v2.py \                                                                                │ ║
-║  │      --prompt "Energetic electronic dance track with heavy bass" \                                     │ ║
-║  │      --duration 30 \                                                                                    │ ║
-║  │      --style_of "./reference_artist.wav" \      # Optional: voice style                                │ ║
-║  │      --lyrics "Feel the bass drop..." \          # Optional: for singing                               │ ║
-║  │      --template verse_chorus \                   # Optional: structure template                        │ ║
-║  │      --output ./output/generated.wav                                                                    │ ║
-║  │                                                                                                         │ ║
-║  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ ║
-║                                                    │                                                         ║
-║                                                    ▼                                                         ║
-║  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ ║
-║  │                                   🔧 CONDITIONING PREPARATION                                           │ ║
-║  │                                                                                                         │ ║
-║  │  ┌───────────────────────────────────────────────────────────────────────────────────────────────────┐  │ ║
-║  │  │ 1. TEXT ENCODING                                                                                  │  │ ║
-║  │  │                                                                                                   │  │ ║
-║  │  │    "Energetic electronic dance track..." ──→ T5 Encoder ──→ text_emb [1, seq, 768]               │  │ ║
-║  │  │                                                                                                   │  │ ║
-║  │  └───────────────────────────────────────────────────────────────────────────────────────────────────┘  │ ║
-║  │                                                                                                         │ ║
-║  │  ┌───────────────────────────────────────────────────────────────────────────────────────────────────┐  │ ║
-║  │  │ 2. VOICE EMBEDDING (if --style_of provided)                                                       │  │ ║
-║  │  │                                                                                                   │  │ ║
-║  │  │    reference.wav ──→ Resemblyzer ──→ voice_emb [1, 256]                                          │  │ ║
-║  │  │                                                                                                   │  │ ║
-║  │  │    (Optional with --separate_vocals)                                                              │  │ ║
-║  │  │    reference.wav ──→ Demucs ──→ vocals.wav ──→ ECAPA-TDNN ──→ ecapa_emb [1, 192]                 │  │ ║
-║  │  │                                                                                                   │  │ ║
-║  │  └───────────────────────────────────────────────────────────────────────────────────────────────────┘  │ ║
-║  │                                                                                                         │ ║
-║  │  ┌───────────────────────────────────────────────────────────────────────────────────────────────────┐  │ ║
-║  │  │ 3. STRUCTURE PLANNING (if --template provided)                                                    │  │ ║
-║  │  │                                                                                                   │  │ ║
-║  │  │    template="verse_chorus" + duration=30s                                                         │  │ ║
-║  │  │         │                                                                                         │  │ ║
-║  │  │         ▼                                                                                         │  │ ║
-║  │  │    CompositionPlanner ──→ [                                                                       │  │ ║
-║  │  │      {"type": "intro", "start": 0, "end": 4},                                                     │  │ ║
-║  │  │      {"type": "verse", "start": 4, "end": 12},                                                    │  │ ║
-║  │  │      {"type": "chorus", "start": 12, "end": 20},                                                  │  │ ║
-║  │  │      {"type": "verse", "start": 20, "end": 26},                                                   │  │ ║
-║  │  │      {"type": "outro", "start": 26, "end": 30},                                                   │  │ ║
-║  │  │    ]                                                                                              │  │ ║
-║  │  │                                                                                                   │  │ ║
-║  │  └───────────────────────────────────────────────────────────────────────────────────────────────────┘  │ ║
-║  │                                                                                                         │ ║
-║  │  ┌───────────────────────────────────────────────────────────────────────────────────────────────────┐  │ ║
-║  │  │ 4. PHONEME CONVERSION (if --lyrics provided)                                                      │  │ ║
-║  │  │                                                                                                   │  │ ║
-║  │  │    "Feel the bass drop" ──→ Gruut/eSpeak ──→ "fiːl ðə beɪs drɒp"                                 │  │ ║
-║  │  │                                                                                                   │  │ ║
-║  │  └───────────────────────────────────────────────────────────────────────────────────────────────────┘  │ ║
-║  │                                                                                                         │ ║
-║  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ ║
-║                                                    │                                                         ║
-║                                                    ▼                                                         ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                     🔄 REVERSE DIFFUSION (DDPM/DDIM)                                         ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                                              ║
-║  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ ║
-║  │                                                                                                         │ ║
-║  │   zT ~ N(0, I)  [1, 128, H, W]     (Pure noise)                                                        │ ║
-║  │        │                                                                                                │ ║
-║  │        │                                                                                                │ ║
-║  │        ▼                                                                                                │ ║
-║  │   ╔═════════════════════════════════════════════════════════════════════════════════════════════════╗   │ ║
-║  │   ║                         FOR t = T, T-1, ..., 1, 0  (N steps, e.g. 50)                           ║   │ ║
-║  │   ╠═════════════════════════════════════════════════════════════════════════════════════════════════╣   │ ║
-║  │   ║                                                                                                 ║   │ ║
-║  │   ║   ┌─────────────────────────────────────────────────────────────────────────────────────────┐   ║   │ ║
-║  │   ║   │                        CLASSIFIER-FREE GUIDANCE (CFG)                                   │   ║   │ ║
-║  │   ║   │                                                                                         │   ║   │ ║
-║  │   ║   │   ε_cond = UNet(zₜ, t, text_emb, voice_emb)      # Conditional prediction              │   ║   │ ║
-║  │   ║   │   ε_uncond = UNet(zₜ, t, ∅, ∅)                   # Unconditional prediction            │   ║   │ ║
-║  │   ║   │                                                                                         │   ║   │ ║
-║  │   ║   │   ε̂ = ε_uncond + cfg_scale * (ε_cond - ε_uncond)  # Guided noise                       │   ║   │ ║
-║  │   ║   │                                                                                         │   ║   │ ║
-║  │   ║   │   💡 cfg_scale=7.5: balances quality vs diversity                                      │   ║   │ ║
-║  │   ║   │                                                                                         │   ║   │ ║
-║  │   ║   └─────────────────────────────────────────────────────────────────────────────────────────┘   ║   │ ║
-║  │   ║                                         │                                                       ║   │ ║
-║  │   ║                                         ▼                                                       ║   │ ║
-║  │   ║   ┌─────────────────────────────────────────────────────────────────────────────────────────┐   ║   │ ║
-║  │   ║   │                        DDPM/DDIM STEP                                                    │   ║   │ ║
-║  │   ║   │                                                                                         │   ║   │ ║
-║  │   ║   │   # DDPM (stochastic):                                                                  │   ║   │ ║
-║  │   ║   │   zₜ₋₁ = (1/√αₜ) * (zₜ - (1-αₜ)/√(1-ᾱₜ) * ε̂) + σₜ * noise                            │   ║   │ ║
-║  │   ║   │                                                                                         │   ║   │ ║
-║  │   ║   │   # DDIM (deterministic, faster):                                                       │   ║   │ ║
-║  │   ║   │   zₜ₋₁ = √ᾱₜ₋₁ * pred_z₀ + √(1-ᾱₜ₋₁) * ε̂                                            │   ║   │ ║
-║  │   ║   │                                                                                         │   ║   │ ║
-║  │   ║   └─────────────────────────────────────────────────────────────────────────────────────────┘   ║   │ ║
-║  │   ║                                         │                                                       ║   │ ║
-║  │   ║                                         ▼                                                       ║   │ ║
-║  │   ║   zₜ₋₁ [1, 128, H, W]  ──→  (next iteration)                                                   ║   │ ║
-║  │   ║                                                                                                 ║   │ ║
-║  │   ╚═════════════════════════════════════════════════════════════════════════════════════════════════╝   │ ║
-║  │        │                                                                                                │ ║
-║  │        ▼                                                                                                │ ║
-║  │   z₀ [1, 128, H, W]  (Denoised latent)                                                                 │ ║
-║  │                                                                                                         │ ║
-║  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ ║
-║                                                    │                                                         ║
-║                                                    ▼                                                         ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                     🔊 AUDIO DECODING                                                        ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                                              ║
-║  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐ ║
-║  │                                                                                                         │ ║
-║  │   z₀ [1, 128, H, W]                                                                                    │ ║
-║  │        │                                                                                                │ ║
-║  │        ▼                                                                                                │ ║
-║  │   ┌─────────────────────┐                                                                               │ ║
-║  │   │   VAE Decoder       │ ──→ mel [1, 128, T_mel]  (Mel spectrogram)                                   │ ║
-║  │   │   (224M params)     │                                                                               │ ║
-║  │   └─────────────────────┘                                                                               │ ║
-║  │        │                                                                                                │ ║
-║  │        ▼                                                                                                │ ║
-║  │   ┌─────────────────────┐                                                                               │ ║
-║  │   │   Vocos Vocoder     │ ──→ audio [1, samples]  (Waveform @ 24kHz)                                   │ ║
-║  │   │   (mel → waveform)  │                                                                               │ ║
-║  │   └─────────────────────┘                                                                               │ ║
-║  │        │                                                                                                │ ║
-║  │        ▼                                                                                                │ ║
-║  │   💾 torchaudio.save("output.wav", audio, 24000)                                                       │ ║
-║  │                                                                                                         │ ║
-║  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ ║
-║                                                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+### Dataset JSON Structure (v3.1)
 
-╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
-║                                    📊 LDM INFERENCE PARAMETERS                                               ║
-╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                                              ║
-║  ┌─────────────────────────────┬──────────────────────────────┬───────────────────────────────────────────┐  ║
-║  │         PARAMETER           │          DEFAULT             │              DESCRIPTION                  │  ║
-║  ├─────────────────────────────┼──────────────────────────────┼───────────────────────────────────────────┤  ║
-║  │  num_steps                  │  50                          │  Number of denoising steps                │  ║
-║  │  cfg_scale                  │  7.5                         │  Classifier-free guidance strength        │  ║
-║  │  sampler                    │  "ddim"                      │  "ddpm" (slow) or "ddim" (fast)          │  ║
-║  │  eta                        │  0.0                         │  DDIM stochasticity (0=deterministic)    │  ║
-║  │  duration                   │  30.0                        │  Target duration in seconds               │  ║
-║  │  seed                       │  None                        │  Random seed for reproducibility          │  ║
-║  │                             │                              │                                           │  ║
-║  │  💡 More steps = better quality but slower                                                             │  ║
-║  │  💡 Higher CFG = more prompt-adherent but less diverse                                                 │  ║
-║  │  💡 DDIM 50 steps ≈ DDPM 1000 steps in quality                                                         │  ║
-║  │                                                                                                        │  ║
-║  └─────────────────────────────┴──────────────────────────────┴───────────────────────────────────────────┘  ║
-║                                                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+```json
+{
+  "audio_path": "music/fma_small/000/000123.mp3",
+  "track_id": 123,
+  "artist": "Artist Name",
+  "title": "Song Title",
+  "album": "Album Name",
+  "genre": "rock",
+  "year": 2023,
+  
+  "prompt": "Energetic rock song with electric guitar riffs and powerful drums...",
+  "text_sentiment": "positive",
+  
+  "duration": 180.5,
+  "sample_rate": 32000,
+  "tempo": 128.0,
+  "key": "C major",
+  "time_signature": "4/4",
+  "loudness_db": -8.5,
+  "energy": 0.82,
+  
+  "has_vocals": true,
+  "lyrics": "Transcribed lyrics from the song...",
+  "phonemes_ipa": "ðɪs ɪz ðə faɪnəl transkrɪpʃən",
+  
+  "voice_embedding": [0.12, -0.34, ...],
+  "voice_embedding_separated": [0.15, -0.31, ...],
+  
+  "clap_audio_embedding": [0.05, 0.12, ...],
+  "clap_text_embedding": [0.08, 0.15, ...],
+  
+  "segments": [
+    {
+      "type": "intro",
+      "start": 0.0,
+      "end": 15.2,
+      "energy": 0.3,
+      "has_vocals": false
+    },
+    {
+      "type": "verse",
+      "start": 15.2,
+      "end": 45.8,
+      "energy": 0.6,
+      "has_vocals": true,
+      "lyrics": "First verse lyrics..."
+    },
+    {
+      "type": "chorus",
+      "start": 45.8,
+      "end": 76.4,
+      "energy": 0.9,
+      "has_vocals": true,
+      "lyrics": "Chorus lyrics..."
+    }
+  ],
+  
+  "beat_positions": [[0.0, 0.47], [0.47, 0.94], ...],
+  "downbeat_positions": [0.0, 1.88, 3.76, ...],
+  "chord_progression": ["C:maj", "G:maj", "Am:min", "F:maj"],
+  
+  "f0_contour": [440.0, 442.1, 438.5, ...],
+  "f0_voiced_mask": [true, true, false, ...],
+  "vibrato_rate": 5.2,
+  "vibrato_depth": 0.15,
+  "vibrato_extent": 0.8,
+  "breath_positions": [[12.5, 12.8], [25.1, 25.4], ...],
+  "phoneme_timestamps": [
+    {"phoneme": "ð", "start": 0.0, "end": 0.05},
+    {"phoneme": "ɪ", "start": 0.05, "end": 0.12}
+  ]
+}
 ```
 
 ---
 
-### train_v2.py - Użycie
+## Conditioning System
 
-```bash
-# Faza 1: VAE
-python train_v2.py --phase 1 \
-    --annotations ./data_v2/dataset.json \
-    --audio_dir ./music/fma_small \
-    --epochs 100 \
-    --batch_size 8 \
-    --device cuda
+### Conditioning Summary
 
-# Faza 2: Composition Planner
-python train_v2.py --phase 2 \
-    --annotations ./data_v2/dataset.json \
-    --epochs 100
+| Parameter | Type | Dimension | Encoder |
+|-----------|------|-----------|---------|
+| `prompt` | str | → 768 | T5TextEncoder |
+| `section_type` | str | → 128 | SectionEmbedding |
+| `position` | float 0-1 | → 128 | SinusoidalPosEmb |
+| `energy` | float 0-1 | → 64 | Linear |
+| `tempo` | float BPM | → 64 | Linear (normalized) |
+| `key` | int 0-23 | → 64 | KeyEmbedding |
+| `loudness` | float dB | → 64 | Linear |
+| `has_vocals` | bool | → 32 | Linear |
+| `sentiment` | str | → 64 | SentimentEmbedding |
+| `genre` | str | → 64 | GenreEmbedding |
+| `artist` | str | → 64 | ArtistEmbedding |
+| `clap_audio` | 512-dim | → 128 | Linear projection |
+| `clap_text` | 512-dim | → 128 | Linear projection |
+| `voice_embedding` | 256-dim | → 256 | VoiceStreamAttention |
+| `ecapa_embedding` | 192-dim | → 256 | VoiceEmbeddingFusion |
+| `num_beats` | int | → 64 | BeatEmbedding |
+| `beat_positions` | List[List[float]] | → 64 | BeatEmbedding |
+| `time_signature` | str | → 32 | TimeSignatureEmb |
+| `current_chord` | str | → 64 | ChordEmbedding |
+| `phonemes_ipa` | str | → 128 | PhonemeEncoder (GRU) |
+| `f0_contour` | List[float] | → 64 | F0Encoder (Conv1d) |
+| `f0_voiced_mask` | List[bool] | → 32 | VoicedMaskEncoder |
+| `vibrato_rate` | float Hz | → 64 | VibratoEncoder |
+| `vibrato_depth` | float cents | → 64 | VibratoEncoder |
+| `vibrato_extent` | float 0-1 | → 64 | VibratoEncoder |
+| `breath_positions` | List[List[float]] | → 32 | BreathEncoder |
 
-# Faza 3: LDM (wymaga VAE checkpoint)
-python train_v2.py --phase 3 \
-    --annotations ./data_v2/dataset.json \
-    --audio_dir ./music/fma_small \
-    --vae_checkpoint ./checkpoints_v2/vae_best.pt \
-    --epochs 200 \
-    --batch_size 4
-```
-
-### LDM v2 Conditioning (v3.1)
-
-Model przyjmuje bogate kondycjonowanie przez `SectionConditioningModule`:
-
-#### 📝 Semantyczne kondycjonowanie
-
-| Kondycja | Wymiar | Opis |
-|----------|--------|------|
-| `text_embed` | 768-dim | T5/CLAP text embedding → 512-dim proj |
-| `clap_audio_embedding` | 512-dim | CLAP audio → 128-dim proj |
-| `clap_text_embedding` | 512-dim | CLAP text → 128-dim proj (fused z audio) |
-
-#### 🎤 Voice kondycjonowanie
-
-| Kondycja | Wymiar | Opis |
-|----------|--------|------|
-| `voice_embedding` | 256-dim | Resemblyzer (z miksu audio) |
-| `voice_emb_separated` | 192-dim | ECAPA-TDNN (z izolowanego wokalu) |
-
-#### 🎼 Struktura utworu
-
-| Kondycja | Wymiar | Opis |
-|----------|--------|------|
-| `section_type` | one-hot 13 | intro/verse/pre_chorus/chorus/post_chorus/bridge/instrumental/solo/breakdown/buildup/drop/outro/unknown |
-| `position` | float | 0.0-1.0 pozycja w utworze → 128-dim MLP |
-| `energy` | float | 0.0-1.0 energia segmentu → 64-dim MLP |
-| `tempo` | float | BPM (norm: (x-60)/140) → 64-dim MLP |
-| `key_idx` | int 0-23 | Tonacja (C/C#/.../B + maj/min) → 64-dim embed |
-
-#### 🔊 Audio metadata (v3)
-
-| Kondycja | Wymiar | Opis |
-|----------|--------|------|
-| `loudness` | float dB | Głośność (norm: (x+30)/30) → 64-dim MLP |
-| `has_vocals` | bool | 0/1 → 32-dim embed |
-| `sentiment_score` | float -1..1 | Sentyment → 64-dim MLP |
-| `genres` | List[List[str]] | Multi-hot genres → mean → 64-dim proj |
-| `artists` | List[str] | Hash to 1000 buckets → 64-dim embed |
-
-#### 🥁 Beat & Chord (v2)
-
-| Kondycja | Wymiar | Opis |
-|----------|--------|------|
-| `num_beats` | int | Liczba beatów w segmencie |
-| `beat_positions` | List[float] | Pozycje beatów → BeatEmbedding → 64-dim |
-| `time_signature` | str | "4/4", "3/4" etc. |
-| `current_chord` | str | "Cmaj", "Am7" etc. → ChordEmbedding → 64-dim |
-
-#### 🎤 Phoneme kondycjonowanie (v2)
-
-| Kondycja | Wymiar | Opis |
-|----------|--------|------|
-| `phonemes_ipa` | str | IPA string → PhonemeEncoder → 128-dim proj |
-| `phoneme_timestamps` | List[(phoneme, start, end)] | Timestamped IPA → PhonemeTimestampEncoder → 64-dim |
-
-#### 🎵 Pitch/F0 kondycjonowanie (v3)
-
-| Kondycja | Wymiar | Opis |
-|----------|--------|------|
-| `f0` | [B, T] | Continuous F0 in Hz |
-| `f0_coarse` | [B, T] | Discrete pitch bins (84 bins) |
-| `f0_voiced_mask` | [B, T] bool | True=voiced, False=unvoiced |
-
-#### 🎤 Singing ekspresja (v3.1)
-
-| Kondycja | Wymiar | Opis |
-|----------|--------|------|
-| `vibrato_rate` | float Hz | Częstotliwość vibrato |
-| `vibrato_depth` | float cents | Głębokość vibrato |
-| `vibrato_extent` | float 0-1 | Zakres vibrato |
-| `breath_positions` | List[List[float]] | Pozycje oddechów → BreathEncoder → 32-dim |
-
-#### 📊 Fusion dimensions
+### Fusion Dimensions
 
 ```
 Base:     section(128) + position(128) + energy(64) + tempo(64) + key(64) + text(512)
@@ -913,13 +356,92 @@ Optional: + clap(128) + beat(64) + chord(64) + phoneme(128)
 Final:    Fusion MLP → output_dim (1024)
 ```
 
-### UNetV2 - Kluczowe moduły
+---
+
+## Inference Pipeline
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                      INFERENCE PIPELINE v2                                  │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  INPUT: "Energetic rock song with female vocals"                           │
+│         + voice_sample.wav (optional)                                      │
+│         + lyrics (optional)                                                │
+│                                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Step 1: Text Encoding                                               │   │
+│  │   prompt → T5Encoder → text_embed [768]                             │   │
+│  │   prompt → CLAPTextEncoder → clap_text_embed [512]                  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                           │                                                │
+│                           ▼                                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Step 2: Voice Encoding (if voice_sample provided)                   │   │
+│  │   voice.wav → Resemblyzer → voice_embed [256]                       │   │
+│  │   voice.wav → ECAPA-TDNN → ecapa_embed [192]                        │   │
+│  │   Fusion(voice, ecapa) → voice_fused [256]                          │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                           │                                                │
+│                           ▼                                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Step 3: Composition Planning                                        │   │
+│  │   Template "verse_chorus" → [intro, verse, chorus, verse, chorus]   │   │
+│  │   Each section: duration, energy, position                          │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                           │                                                │
+│                           ▼                                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Step 4: Per-Section Generation (DDPM/DDIM)                          │   │
+│  │                                                                     │   │
+│  │   For each section:                                                 │   │
+│  │     z_T ~ N(0, I)                     # Start with noise            │   │
+│  │     for t = T, T-1, ..., 1:                                         │   │
+│  │       ε_θ = UNet(z_t, t, text_embed, voice_fused, section_cond)    │   │
+│  │       z_{t-1} = DDPM_step(z_t, ε_θ, t)                             │   │
+│  │     z_0 = final denoised latent                                     │   │
+│  │                                                                     │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                           │                                                │
+│                           ▼                                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Step 5: Audio Decoding                                              │   │
+│  │   z_0 → VAE.decode() → mel_spectrogram [128, T]                     │   │
+│  │   mel → Vocos → audio_waveform [samples]                            │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                           │                                                │
+│                           ▼                                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Step 6: Concatenation                                               │   │
+│  │   [intro_audio, verse_audio, chorus_audio, ...] → final_audio.wav   │   │
+│  │   Apply crossfade between sections (50ms)                           │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  OUTPUT: final_audio.wav (44.1kHz stereo)                                  │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+### DDPM vs DDIM
+
+| Method | Steps | Speed | Quality |
+|--------|-------|-------|---------|
+| DDPM | 1000 | Slow (~2min/30s) | Best |
+| DDPM-50 | 50 | Medium (~15s/30s) | Good |
+| DDIM-50 | 50 | Medium (~15s/30s) | Good |
+| DDIM-20 | 20 | Fast (~6s/30s) | Acceptable |
+
+**Recommendation:** Use DDIM-50 for production, DDPM-1000 for final renders.
+
+---
+
+## UNet V2 - Key Modules
 
 ```python
 UNetV2(
-    in_channels=128,        # latent_dim z VAE (v2: increased from 8)
+    in_channels=128,        # latent_dim from VAE (v2: increased from 8)
     out_channels=128,
-    model_channels=320,     # główny "size knob"
+    model_channels=320,     # main "size knob"
     num_res_blocks=2,
     attention_resolutions=[8, 4, 2],
     context_dim=768,        # text embedding dim
@@ -952,7 +474,7 @@ UNetV2(
 )
 ```
 
-#### SectionConditioningModule - sekcje i metadane
+### SectionConditioningModule - Sections and Metadata
 
 ```python
 SectionConditioningModule(
@@ -973,9 +495,9 @@ SectionConditioningModule(
     voice_dim=256,
 )
 
-# Forward przyjmuje 30+ parametrów kondycjonowania
+# Forward accepts 30+ conditioning parameters
 section_cond.forward(
-    text_embed,                     # [B, 768] lub [B, seq, 768]
+    text_embed,                     # [B, 768] or [B, seq, 768]
     section_type,                   # List[str]
     position, energy, tempo,        # [B] floats
     key_idx,                        # [B] int 0-23
@@ -994,33 +516,33 @@ section_cond.forward(
 
 ---
 
-## Struktura plików
+## File Structure
 
 ```
 muzible-muze-ai/
-├── 📄 train_v2.py                 # Skrypt treningowy v2 (3-fazowy)
-├── 📄 inference_v2.py             # Generowanie muzyki z modelu
-├── 📄 build_dataset_v2.py         # Dataset builder v2 (pełna ekstrakcja)
+├── 📄 train_v2.py                 # Training script v2 (3-phase)
+├── 📄 inference_v2.py             # Music generation from model
+├── 📄 build_dataset_v2.py         # Dataset builder v2 (full extraction)
 │
-├── 📁 docs_v2/                    # Dokumentacja
-│   └── 📄 DATASET_BUILDER.md      # Pełna dok. dataset buildera
+├── 📁 docs_v2/                    # Documentation
+│   └── 📄 DATASET_BUILDER.md      # Full dataset builder documentation
 │
 ├── 📁 tools/
-│   ├── 📄 f0_extractor.py         # Ekstrakcja F0/pitch
-│   └── 📄 analyze_metadata.py     # Analiza metadanych
+│   ├── 📄 f0_extractor.py         # F0/pitch extraction
+│   └── 📄 analyze_metadata.py     # Metadata analysis
 │
-├── 📁 tools_v2/                   # Narzędzia v2
-│   ├── 📄 segment_annotator.py    # Detekcja segmentów (verse/chorus)
-│   ├── 📄 generate_artist_embeddings.py  # Generowanie voice embeddings
-│   └── 📄 scan_mp3_folder.py      # Skanowanie folderów MP3
+├── 📁 tools_v2/                   # Tools v2
+│   ├── 📄 segment_annotator.py    # Segment detection (verse/chorus)
+│   ├── 📄 generate_artist_embeddings.py  # Voice embeddings generation
+│   └── 📄 scan_mp3_folder.py      # MP3 folder scanning
 │
 ├── 📁 models/
-│   ├── 📄 audio_vae.py            # Audio VAE (kompresja audio → latent)
+│   ├── 📄 audio_vae.py            # Audio VAE (audio → latent compression)
 │   ├── 📄 vocoder.py              # Vocoder (mel → waveform)
 │   └── 📄 voice_synthesis.py      # Voice cloning (XTTS, Demucs)
 │
-├── 📁 models_v2/                  # 🆕 Architektura V2
-│   └── 📄 latent_diffusion.py     # U-Net V2 + wszystkie encodery
+├── 📁 models_v2/                  # 🆕 Architecture V2
+│   └── 📄 latent_diffusion.py     # U-Net V2 + all encoders
 │
 ├── 📁 data/                       # Data v1 (legacy)
 │   ├── 📄 music_dataset.py        # PyTorch Dataset
@@ -1028,36 +550,36 @@ muzible-muze-ai/
 │
 ├── 📁 data_v2/                    # 🆕 Data v2
 │   ├── 📄 segmented_dataset.py    # SegmentedMusicDataset
-│   └── 📄 *.json                  # Datasety v2
+│   └── 📄 *.json                  # Datasets v2
 │
 ├── 📁 music/
-│   └── 📁 fma_small/              # Pliki audio FMA
+│   └── 📁 fma_small/              # FMA audio files
 │
-├── 📁 checkpoints/                # Checkpointy v1
-├── 📁 checkpoints_v2/             # 🆕 Checkpointy v2
+├── 📁 checkpoints/                # Checkpoints v1
+├── 📁 checkpoints_v2/             # 🆕 Checkpoints v2
 │
-└── 📁 output/                     # Wygenerowane audio
+└── 📁 output/                     # Generated audio
 ```
 
 ---
 
-## Scenariusze użycia
+## Usage Scenarios
 
-### Scenariusz 1: Trening od zera na własnych MP3
+### Scenario 1: Training from Scratch on Your Own MP3s
 
-**Kiedy użyć:** Masz własną kolekcję MP3 i chcesz wytrenować model od podstaw.
+**When to use:** You have your own MP3 collection and want to train a model from scratch.
 
-#### Krok 1: Przygotuj strukturę folderów
+#### Step 1: Prepare Folder Structure
 
 ```bash
 mkdir -p my_music/artist_name
 cp ~/Music/*.mp3 my_music/artist_name/
 ```
 
-#### Krok 2: Wygeneruj dataset
+#### Step 2: Generate Dataset
 
 ```bash
-# Pełny pipeline z analizą audio, wokalu i voice embeddings
+# Full pipeline with audio analysis, vocals and voice embeddings
 python build_dataset_v2.py \
     --audio_dir ./my_music \
     --output ./data_v2/my_dataset.json \
@@ -1065,11 +587,11 @@ python build_dataset_v2.py \
     --batch_size 4
 ```
 
-**Co generuje:**
-- `my_dataset.json` - metadane + prompty + wszystkie cechy audio (CLAP, voice, F0, etc.)
-- `my_dataset.artist_embeddings.json` - średnie voice embeddings per artysta
+**Generated files:**
+- `my_dataset.json` - metadata + prompts + all audio features (CLAP, voice, F0, etc.)
+- `my_dataset.artist_embeddings.json` - average voice embeddings per artist
 
-#### Krok 3: Trening VAE (Faza 1)
+#### Step 3: Train VAE (Phase 1)
 
 ```bash
 python train_v2.py \
@@ -1081,9 +603,9 @@ python train_v2.py \
     --device cuda
 ```
 
-**Czas:** ~2-4h na 1000 tracków (GPU RTX 3090)
+**Time:** ~2-4h for 1000 tracks (GPU RTX 3090)
 
-#### Krok 4: Trening Diffusion (Faza 3)
+#### Step 4: Train Diffusion (Phase 3)
 
 ```bash
 python train_v2.py \
@@ -1096,23 +618,23 @@ python train_v2.py \
     --device cuda
 ```
 
-**Czas:** ~8-12h na 1000 tracków (GPU RTX 3090)
+**Time:** ~8-12h for 1000 tracks (GPU RTX 3090)
 
 ---
 
-### Scenariusz 2: Trening na FMA dataset
+### Scenario 2: Training on FMA Dataset
 
-**Kiedy użyć:** Masz FMA dataset i chcesz wytrenować model.
+**When to use:** You have the FMA dataset and want to train a model.
 
-#### Krok 1: Pobierz FMA (jeśli nie masz)
+#### Step 1: Download FMA (if you don't have it)
 
 ```bash
-# FMA Small (~8GB, 8000 tracków)
+# FMA Small (~8GB, 8000 tracks)
 wget https://os.unil.cloud.switch.ch/fma/fma_small.zip
 unzip fma_small.zip -d ./music/
 ```
 
-#### Krok 2: Zbuduj dataset v2
+#### Step 2: Build Dataset v2
 
 ```bash
 python build_dataset_v2.py \
@@ -1122,13 +644,13 @@ python build_dataset_v2.py \
     --batch_size 4
 ```
 
-**Co generuje build_dataset_v2:**
-| Pole | Opis | Źródło |
-|------|------|--------|
-| `has_vocals` | Czy utwór ma wokal | Whisper |
-| `lyrics` | Transkrypcja tekstu | Whisper |
-| `voice_embedding` | 256-dim wektor | Resemblyzer |
-| `ecapa_embedding` | 192-dim wektor | ECAPA-TDNN |
+**What build_dataset_v2 generates:**
+| Field | Description | Source |
+|-------|-------------|--------|
+| `has_vocals` | Whether track has vocals | Whisper |
+| `lyrics` | Text transcription | Whisper |
+| `voice_embedding` | 256-dim vector | Resemblyzer |
+| `ecapa_embedding` | 192-dim vector | ECAPA-TDNN |
 | `clap_audio_embedding` | 512-dim | CLAP |
 | `clap_text_embedding` | 512-dim | CLAP |
 | `f0_contour` | Pitch contour | CREPE/pYIN |
@@ -1136,16 +658,16 @@ python build_dataset_v2.py \
 | `breath_positions` | Breath timings | Custom |
 | `phoneme_timestamps` | IPA + timing | Gruut/eSpeak |
 
-#### Krok 3: Trening
+#### Step 3: Training
 
 ```bash
-# Faza 1: VAE
+# Phase 1: VAE
 python train_v2.py --phase 1 \
     --annotations ./data_v2/fma_dataset.json \
     --audio_dir ./music/fma_small \
     --epochs 50
 
-# Faza 3: LDM z voice conditioning
+# Phase 3: LDM with voice conditioning
 python train_v2.py --phase 3 \
     --annotations ./data_v2/fma_dataset.json \
     --audio_dir ./music/fma_small \
@@ -1155,64 +677,64 @@ python train_v2.py --phase 3 \
 
 ---
 
-### Scenariusz 3: Dodanie nowych utworów do datasetu
+### Scenario 3: Adding New Tracks to Dataset
 
-**Kiedy użyć:** Masz już dataset i chcesz dodać nowe tracki.
+**When to use:** You already have a dataset and want to add new tracks.
 
-#### Metoda A: Rebuild z nowym folderem
+#### Method A: Rebuild with New Folder
 
 ```bash
-# Dodaj nowe MP3 do folderu
+# Add new MP3s to folder
 cp ~/new_music/*.mp3 ./music/fma_small/new/
 
-# Przebuduj dataset (wykryje nowe pliki)
+# Rebuild dataset (will detect new files)
 python build_dataset_v2.py \
     --audio_dir ./music/fma_small \
     --output ./data_v2/dataset_updated.json \
     --device cuda
 ```
 
-#### Metoda B: Merge JSON
+#### Method B: Merge JSON
 
 ```python
 import json
 
-# Wczytaj istniejący
+# Load existing
 with open('data_v2/dataset.json') as f:
     dataset = json.load(f)
 
-# Wczytaj nowe
+# Load new
 with open('data_v2/new_tracks.json') as f:
     new_tracks = json.load(f)
 
-# Połącz (sprawdź duplikaty po audio_path)
+# Merge (check duplicates by audio_path)
 existing_paths = {t['audio_path'] for t in dataset}
 for track in new_tracks:
     if track['audio_path'] not in existing_paths:
         dataset.append(track)
 
-# Zapisz
+# Save
 with open('data_v2/dataset_merged.json', 'w') as f:
     json.dump(dataset, f, indent=2)
 ```
 
-#### Metoda C: Kontynuuj trening (fine-tuning)
+#### Method C: Continue Training (Fine-tuning)
 
 ```bash
-# Dotrenuj na nowych danych
+# Fine-tune on new data
 python train_v2.py --phase 3 \
     --annotations ./data_v2/dataset_merged.json \
     --audio_dir ./music \
     --vae_checkpoint ./checkpoints_v2/vae_best.pt \
     --ldm_checkpoint ./checkpoints_v2/ldm_epoch_100.pt \
-    --epochs 20  # Mniej epok dla fine-tuningu
+    --epochs 20  # Fewer epochs for fine-tuning
 ```
 
 ---
 
-## Inference - generowanie muzyki
+## Inference - Music Generation
 
-### Podstawowe generowanie
+### Basic Generation
 
 ```bash
 python inference_v2.py \
@@ -1222,7 +744,7 @@ python inference_v2.py \
     --device cuda
 ```
 
-### Ze stylem artysty (voice embedding)
+### With Artist Style (Voice Embedding)
 
 ```bash
 python inference_v2.py \
@@ -1231,7 +753,7 @@ python inference_v2.py \
     --output ./output/artist_style.wav
 ```
 
-### Z klonowaniem głosu
+### With Voice Cloning
 
 ```bash
 python inference_v2.py \
@@ -1241,7 +763,7 @@ python inference_v2.py \
     --output ./output/cloned_voice.wav
 ```
 
-### Z szablonem struktury
+### With Structure Template
 
 ```bash
 python inference_v2.py \
@@ -1251,46 +773,46 @@ python inference_v2.py \
     --output ./output/structured_song.wav
 ```
 
-### Wszystkie opcje
+### All Options
 
 ```bash
 python inference_v2.py --help
 
-# Główne opcje:
-#   --prompt TEXT          Prompt opisujący muzykę
-#   --output PATH          Ścieżka wyjściowa (def: ./output/generated.wav)
-#   --duration FLOAT       Długość w sekundach (def: 30)
-#   --cfg_scale FLOAT      Classifier-free guidance (def: 7.5)
-#   --num_steps INT        Kroki denoising (def: 50)
-#   --template NAME        Szablon struktury (verse_chorus, etc.)
+# Main options:
+#   --prompt TEXT          Prompt describing the music
+#   --output PATH          Output path (default: ./output/generated.wav)
+#   --duration FLOAT       Duration in seconds (default: 30)
+#   --cfg_scale FLOAT      Classifier-free guidance (default: 7.5)
+#   --num_steps INT        Denoising steps (default: 50)
+#   --template NAME        Structure template (verse_chorus, etc.)
 #
 # Voice conditioning:
-#   --style_of NAME/PATH   Voice embedding artysty lub plik .wav
+#   --style_of NAME/PATH   Artist voice embedding or .wav file
 #
 # Voice cloning:
-#   --voice_clone NAME     Artysta do sklonowania głosu
-#   --voice_clone_samples PATH  Folder/plik z samplami głosu
-#   --lyrics TEXT          Tekst do zaśpiewania
-#   --language CODE        Kod języka (pl, en, de, etc.)
+#   --voice_clone NAME     Artist to clone voice from
+#   --voice_clone_samples PATH  Folder/file with voice samples
+#   --lyrics TEXT          Text to sing
+#   --language CODE        Language code (pl, en, de, etc.)
 ```
 
 ---
 
-## Szczegółowy opis plików
+## Detailed File Descriptions
 
 ### 📄 `train_v2.py`
 
-**Cel:** Główny skrypt treningowy v2 dla VAE, Composition Planner i LDM.
+**Purpose:** Main v2 training script for VAE, Composition Planner and LDM.
 
-**Fazy treningu:**
-1. **Faza 1 (VAE):** Audio → Mel → Latent → Mel (rekonstrukcja)
-2. **Faza 2 (Composition Planner):** Track features → Composition plan
-3. **Faza 3 (LDM):** Noise → UNet V2 (conditioned) → Latent → VAE → Audio
+**Training phases:**
+1. **Phase 1 (VAE):** Audio → Mel → Latent → Mel (reconstruction)
+2. **Phase 2 (Composition Planner):** Track features → Composition plan
+3. **Phase 3 (LDM):** Noise → UNet V2 (conditioned) → Latent → VAE → Audio
 
-**Kluczowe parametry:**
+**Key parameters:**
 ```python
 # VAE
-latent_dim = 128      # v2: zwiększone z 8
+latent_dim = 128      # v2: increased from 8
 sample_rate = 32000   # v2: 32kHz
 
 # LDM
@@ -1302,19 +824,19 @@ voice_dropout = 0.1   # Voice conditioning dropout
 
 ### 📄 `inference_v2.py`
 
-**Cel:** Generowanie muzyki z wytrenowanego modelu v2.
+**Purpose:** Generate music from trained v2 model.
 
-**Główne funkcje:**
-- `generate_composition_plan()` - planowanie struktury utworu
-- `generate_section_audio()` - generacja pojedynczej sekcji
-- `generate_full_song()` - generacja pełnego utworu sekcja po sekcji
+**Main functions:**
+- `generate_composition_plan()` - plan track structure
+- `generate_section_audio()` - generate single section
+- `generate_full_song()` - generate full track section by section
 
 **Pipeline:**
 1. Prompt → T5/CLAP Encoder → text embedding
-2. (opcjonalnie) Voice sample → Resemblyzer/ECAPA → voice embedding
-3. (opcjonalnie) Lyrics → Gruut/eSpeak → phonemes IPA
-4. Template → CompositionPlanner → struktura sekcji
-5. Per sekcja: Noise + embeddings → UNet V2 denoising → Latent
+2. (optional) Voice sample → Resemblyzer/ECAPA → voice embedding
+3. (optional) Lyrics → Gruut/eSpeak → phonemes IPA
+4. Template → CompositionPlanner → section structure
+5. Per section: Noise + embeddings → UNet V2 denoising → Latent
 6. Latent → VAE Decoder → Mel spectrogram
 7. Mel → Vocos → Audio WAV
 8. Concat all sections → Final audio
@@ -1323,10 +845,10 @@ voice_dropout = 0.1   # Voice conditioning dropout
 
 ### 📄 `build_dataset_v2.py`
 
-**Cel:** Pełna ekstrakcja cech z plików audio.
+**Purpose:** Full feature extraction from audio files.
 
-**Ekstrahuje:**
-- Metadane (ID3 tags)
+**Extracts:**
+- Metadata (ID3 tags)
 - Audio features (librosa: tempo, key, energy, etc.)
 - Voice embeddings (Resemblyzer 256-dim + ECAPA-TDNN 192-dim)
 - CLAP embeddings (audio 512-dim + text 512-dim)
@@ -1335,38 +857,37 @@ voice_dropout = 0.1   # Voice conditioning dropout
 - Segment detection (verse/chorus/bridge)
 - Lyrics transcription (Whisper)
 
-**Wyjście:** JSON z polami v3.1 (patrz diagram DATASET powyżej)
+**Output:** JSON with v3.1 fields (see DATASET diagram above)
 
 ---
 
 ### 📄 `models_v2/latent_diffusion.py`
 
-**Cel:** UNet V2 + wszystkie moduły kondycjonowania.
+**Purpose:** UNet V2 + all conditioning modules.
 
-**Główne klasy:**
-- `UNetV2` - główny model diffusion
-- `SectionConditioningModule` - fusion wszystkich kondycji
-- `VoiceStreamAttention` - gated cross-attention dla voice
-- `VoiceEmbeddingFusion` - fuzja Resemblyzer + ECAPA
-- `PitchEncoder`, `VibratoEncoder`, `BreathEncoder` - enkodery cech
-- `BeatEmbedding`, `ChordEmbedding`, `PhonemeEncoder` - enkodery v2
+**Main classes:**
+- `UNetV2` - main diffusion model
+- `SectionConditioningModule` - fusion of all conditioning
+- `VoiceStreamAttention` - gated cross-attention for voice
+- `VoiceEmbeddingFusion` - Resemblyzer + ECAPA fusion
+- `PitchEncoder`, `VibratoEncoder`, `BreathEncoder` - feature encoders
+- `BeatEmbedding`, `ChordEmbedding`, `PhonemeEncoder` - v2 encoders
 
 ---
 
 ### 📄 `models/audio_vae.py`
 
-**Cel:** Kompresja audio do przestrzeni latentnej.
+**Purpose:** Audio compression to latent space.
 
-**Architektura v2:**
+**Architecture v2:**
 ```
 Mel [1, 128, T] → Encoder → μ, σ → z [128, H, W] → Decoder → Mel [1, 128, T]
 ```
-```
 
-**Parametry:**
-- `latent_dim = 8` - wymiar kanałów latent
-- `channels = [64, 128, 256, 512]` - kanały encodera
-- `n_mels = 128` - liczba mel filterbanks (v2: zwiększone z 80)
+**Parameters:**
+- `latent_dim = 8` - latent channel dimension
+- `channels = [64, 128, 256, 512]` - encoder channels
+- `n_mels = 128` - number of mel filterbanks (v2: increased from 80)
 
 **Loss:**
 ```python
@@ -1377,21 +898,29 @@ loss = reconstruction_loss + beta * kl_divergence + stft_loss
 
 ### 📄 `models/text_encoder.py`
 
-**Cel:** Enkodowanie promptów tekstowych.
+**Purpose:** Text prompt encoding.
 
-**Backendy:**
-- `T5TextEncoder` - Flan-T5 (768-dim, dobry dla długich opisów)
-- `CLAPTextEncoder` - CLAP (specjalnie trenowany na audio-text)
+**Backends:**
+- `T5TextEncoder` - Flan-T5 (768-dim, good for long descriptions)
+- `CLAPTextEncoder` - CLAP (specifically trained on audio-text)
+
+---
+
+### 📄 `models/voice_synthesis.py`
+
+**Purpose:** Voice cloning and synthesis.
+
+**Usage:**
 ```python
-# 1. Wyekstrahuj wokal
+# 1. Extract vocals
 extractor = VoiceExtractorFromSong()
 vocals_path = extractor.extract_vocals("song.mp3")
 
-# 2. Zarejestruj głos
+# 2. Register voice
 synth = VoiceSynthesizer(backend="coqui")
 synth.register_voice("artist", vocals_path)
 
-# 3. Syntetyzuj nowy tekst
+# 3. Synthesize new text
 audio = synth.synthesize("New lyrics...", voice="artist")
 ```
 
@@ -1399,14 +928,14 @@ audio = synth.synthesize("New lyrics...", voice="artist")
 
 ### 📄 `data/music_dataset.py`
 
-**Cel:** PyTorch Dataset dla treningu.
+**Purpose:** PyTorch Dataset for training.
 
-**Zwraca batch:**
+**Returns batch:**
 ```python
 {
     'audio': torch.Tensor,           # [num_samples]
     'prompt': str,                   # "Energetic rock song..."
-    'voice_embedding': torch.Tensor, # [256] lub None
+    'voice_embedding': torch.Tensor, # [256] or None
     'lyrics': str,                   # "Transcribed lyrics..."
     'has_vocals': bool,
     'text_sentiment': str,           # "positive"
@@ -1416,93 +945,93 @@ audio = synth.synthesize("New lyrics...", voice="artist")
 ```
 
 **Custom collate_fn:**
-- Stackuje tensory
-- Grupuje stringi w listy
-- Obsługuje None w voice_embedding
+- Stacks tensors
+- Groups strings into lists
+- Handles None in voice_embedding
 
 ---
 
 ## FAQ & Troubleshooting
 
-### ❓ Dlaczego `/var/folders/...` w ścieżce do wokali?
+### ❓ Why `/var/folders/...` in vocals path?
 
-**Pytanie:** `Vocals saved to: /var/folders/fg/frwh54994k9gy6h5y_tc1_940000gn/T/2_Food_vocals.wav`
+**Question:** `Vocals saved to: /var/folders/fg/frwh54994k9gy6h5y_tc1_940000gn/T/2_Food_vocals.wav`
 
-**Odpowiedź:** To jest **domyślny folder tymczasowy macOS** (`tempfile.gettempdir()`).
+**Answer:** This is the **default macOS temporary folder** (`tempfile.gettempdir()`).
 
-`VoiceExtractorFromSong` domyślnie zapisuje wyekstrahowane wokale do folderu tymczasowego systemu, który na macOS to:
+`VoiceExtractorFromSong` saves extracted vocals to the system temporary folder by default, which on macOS is:
 ```
 /var/folders/XX/XXXX/T/
 ```
 
-**Rozwiązanie:** Ustaw własny `output_dir`:
+**Solution:** Set your own `output_dir`:
 
 ```python
 extractor = VoiceExtractorFromSong(
-    output_dir="./data/separated_vocals"  # Stały folder
+    output_dir="./data/separated_vocals"  # Permanent folder
 )
 ```
 
-Lub podczas budowania datasetu z `build_dataset_v2.py` z flagą `--separate_vocals`.
+Or when building dataset with `build_dataset_v2.py` use `--separate_vocals` flag.
 
 ---
 
-### ❓ Trening jest bardzo wolny na CPU
+### ❓ Training is Very Slow on CPU
 
-**Problem:** Trening na CPU zajmuje godziny nawet dla kilku tracków.
+**Problem:** Training on CPU takes hours even for a few tracks.
 
-**Rozwiązania:**
-1. Użyj GPU: `--device cuda`
-2. Zmniejsz batch size: `--batch_size 1`
-3. Zmniejsz liczbę tracków: `--max_tracks 10`
-4. Użyj mixed precision (auto na GPU)
+**Solutions:**
+1. Use GPU: `--device cuda`
+2. Reduce batch size: `--batch_size 1`
+3. Reduce number of tracks: `--max_tracks 10`
+4. Use mixed precision (auto on GPU)
 
 ---
 
 ### ❓ `CUDA out of memory`
 
-**Problem:** GPU nie ma wystarczająco pamięci.
+**Problem:** GPU doesn't have enough memory.
 
-**Rozwiązania:**
-1. Zmniejsz batch size: `--batch_size 1`
-2. Użyj gradient checkpointing (domyślnie włączone)
-3. Użyj mniejszego modelu VAE
-4. Skróć duration: zmień w kodzie `duration=5.0`
-
----
-
-### ❓ Voice cloning brzmi robotycznie
-
-**Problem:** XTTS generuje sztuczny głos.
-
-**Rozwiązania:**
-1. Użyj dłuższego sampla głosu (>30s)
-2. Upewnij się że sample ma czysty wokal (bez instrumentów)
-3. Użyj ElevenLabs zamiast Coqui (lepsza jakość, płatne)
+**Solutions:**
+1. Reduce batch size: `--batch_size 1`
+2. Use gradient checkpointing (enabled by default)
+3. Use smaller VAE model
+4. Shorten duration: change in code `duration=5.0`
 
 ---
 
-### ❓ Whisper nie wykrywa wokalu
+### ❓ Voice Cloning Sounds Robotic
 
-**Problem:** `has_vocals: false` dla utworów z wokalem.
+**Problem:** XTTS generates artificial voice.
 
-**Przyczyny:**
-1. Instrumental zbyt głośny
-2. Wokal w języku niewspieranym
-3. Za krótki fragment analizowany
-
-**Rozwiązania:**
-1. Użyj `--whisper_full` (analizuj cały utwór)
-2. Użyj większego modelu: `--whisper_model medium`
-3. Najpierw odseparuj wokal: `--separate_vocals`
+**Solutions:**
+1. Use longer voice sample (>30s)
+2. Make sure sample has clean vocals (no instruments)
+3. Use ElevenLabs instead of Coqui (better quality, paid)
 
 ---
 
-### ❓ Brak modułu `speechbrain`
+### ❓ Whisper Doesn't Detect Vocals
+
+**Problem:** `has_vocals: false` for tracks with vocals.
+
+**Causes:**
+1. Instrumental too loud
+2. Vocals in unsupported language
+3. Analyzed fragment too short
+
+**Solutions:**
+1. Use `--whisper_full` (analyze entire track)
+2. Use larger model: `--whisper_model medium`
+3. First separate vocals: `--separate_vocals`
+
+---
+
+### ❓ Missing Module `speechbrain`
 
 **Warning:** `No module named 'speechbrain'`
 
-**Rozwiązanie:** System automatycznie używa `resemblyzer` jako fallback. Jeśli chcesz SpeechBrain:
+**Solution:** System automatically uses `resemblyzer` as fallback. If you want SpeechBrain:
 ```bash
 pip install speechbrain
 ```
@@ -1511,14 +1040,14 @@ pip install speechbrain
 
 ## 📊 Model Size Configuration
 
-### Parametry konfiguracji rozmiaru modelu
+### Model Size Parameters
 
-| Parametr | Wpływ | Opis |
-|----------|-------|------|
-| `latent_dim` | Minimalny (~3M) | Wymiar przestrzeni latentnej VAE |
-| `model_channels` | **KLUCZOWY** | Bazowa szerokość kanałów UNet - główny "size knob" |
+| Parameter | Impact | Description |
+|-----------|--------|-------------|
+| `latent_dim` | Minimal (~3M) | VAE latent space dimension |
+| `model_channels` | **KEY** | Base UNet channel width - main "size knob" |
 
-### Tabela rozmiarów modeli
+### Model Size Table
 
 | Config | latent_dim | model_channels | VAE | UNet | **Total** |
 |--------|-----------|----------------|-----|------|-----------|
@@ -1528,29 +1057,29 @@ pip install speechbrain
 | XL Production | 256 | 512 | 228M | 2.8B | **~3B** |
 | XXL (multi-billion) | 256 | 768 | 228M | 6.1B | **~6.4B** |
 
-### Wnioski
+### Conclusions
 
-- **`latent_dim=128` jest wystarczający** - różnica między 128 a 256 to tylko ~3M parametrów w VAE (~1.5% różnicy)
-- **`model_channels` to prawdziwy "size knob"** - zwiększenie z 320→512 daje skok z 1.1B→2.8B
-- Dla **kilku miliardów parametrów**: `model_channels=512-768` jest kluczowe
+- **`latent_dim=128` is sufficient** - difference between 128 and 256 is only ~3M parameters in VAE (~1.5% difference)
+- **`model_channels` is the real "size knob"** - increasing from 320→512 gives jump from 1.1B→2.8B
+- For **several billion parameters**: `model_channels=512-768` is key
 
-### Rekomendacje
+### Recommendations
 
-| Zastosowanie | Konfiguracja | Rozmiar |
-|--------------|--------------|---------|
-| Lokalne testy/dev | `latent_dim=128, model_channels=256` | ~1B |
-| Produkcja standardowa | `latent_dim=128, model_channels=320` | ~1.3B |
-| Duży model produkcyjny | `latent_dim=128, model_channels=512` | ~3B |
-| Bardzo duży model | `latent_dim=256, model_channels=768` | ~6.4B |
+| Use Case | Configuration | Size |
+|----------|---------------|------|
+| Local testing/dev | `latent_dim=128, model_channels=256` | ~1B |
+| Standard production | `latent_dim=128, model_channels=320` | ~1.3B |
+| Large production model | `latent_dim=128, model_channels=512` | ~3B |
+| Very large model | `latent_dim=256, model_channels=768` | ~6.4B |
 
-### Przykład konfiguracji w kodzie
+### Code Configuration Example
 
 ```python
 # Test/Dev (~1B)
 unet = UNetV2(
     in_channels=128,
     out_channels=128,
-    model_channels=256,  # mniejszy dla szybkiego testowania
+    model_channels=256,  # smaller for quick testing
     context_dim=768,
 )
 
@@ -1558,62 +1087,62 @@ unet = UNetV2(
 unet = UNetV2(
     in_channels=128,
     out_channels=128,
-    model_channels=512,  # większy dla jakości
+    model_channels=512,  # larger for quality
     context_dim=768,
 )
 ```
 
-### AudioVAE - Pełna konfiguracja
+### AudioVAE - Full Configuration
 
-**Parametry `AudioVAE.__init__`:**
+**`AudioVAE.__init__` parameters:**
 
-| Parametr | Default | Opis |
-|----------|---------|------|
+| Parameter | Default | Description |
+|-----------|---------|-------------|
 | `sample_rate` | 32000 | v2: 32kHz (v1: 22050) |
-| `n_mels` | 128 | Liczba mel bins |
+| `n_mels` | 128 | Number of mel bins |
 | `n_fft` | 1024 | FFT window size |
 | `hop_length` | 320 | 10ms hop @ 32kHz |
-| `latent_dim` | 128 | v2: zwiększone z 8 |
-| `channels` | None | Auto-select z `LATENT_CONFIGS` |
+| `latent_dim` | 128 | v2: increased from 8 |
+| `channels` | None | Auto-select from `LATENT_CONFIGS` |
 | `use_stft_loss` | True | Multi-Resolution STFT Loss |
-| `use_checkpoint` | False | Gradient checkpointing (oszczędność VRAM) |
+| `use_checkpoint` | False | Gradient checkpointing (saves VRAM) |
 
 **Auto-select channels (`LATENT_CONFIGS`):**
 
-| latent_dim | channels (auto) | Rozmiar VAE |
-|------------|-----------------|-------------|
+| latent_dim | channels (auto) | VAE Size |
+|------------|-----------------|----------|
 | 8 | [64, 128, 256, 512] | **55M** |
 | 32 | [64, 128, 256, 512] | **56M** |
 | 64 | [96, 192, 384, 768] | **125M** |
 | 128 | [128, 256, 512, 1024] | **224M** |
 
-**Custom channels - pełna skala:**
+**Custom channels - full scale:**
 
-| Config | channels | Rozmiar |
-|--------|----------|---------|
+| Config | channels | Size |
+|--------|----------|------|
 | v2 Light | [64, 128, 256, 512] | **57M** |
 | v2 Default | [128, 256, 512, 1024] | **224M** |
 | v2 Heavy | [256, 512, 1024, 2048] | **889M** |
 
-**Przykłady konfiguracji VAE:**
+**VAE configuration examples:**
 
 ```python
-# Default v2 (224M) - zalecane
+# Default v2 (224M) - recommended
 vae = AudioVAE(latent_dim=128)
 
-# Light (57M) - szybkie testy
+# Light (57M) - quick tests
 vae = AudioVAE(latent_dim=128, channels=[64, 128, 256, 512])
 
-# Heavy (889M) - maksymalna jakość rekonstrukcji
+# Heavy (889M) - maximum reconstruction quality
 vae = AudioVAE(latent_dim=128, channels=[256, 512, 1024, 2048])
 
-# Z gradient checkpointing (mniej VRAM)
+# With gradient checkpointing (less VRAM)
 vae = AudioVAE(latent_dim=128, use_checkpoint=True)
 ```
 
 ---
 
-## Wymagania
+## Requirements
 
 ```txt
 # Core
@@ -1628,36 +1157,37 @@ librosa
 soundfile
 mutagen
 
-# Whisper (opcjonalne)
-faster-whisper  # lub openai-whisper
+# Whisper (optional)
+faster-whisper  # or openai-whisper
 
-# Voice embeddings (jedno z):
-resemblyzer        # lekkie (256-dim)
-speechbrain        # lepsze (192-dim ECAPA-TDNN)
+# Voice embeddings (one of):
+resemblyzer        # lightweight (256-dim)
+speechbrain        # better (192-dim ECAPA-TDNN)
 
-# Voice cloning (opcjonalne)
+# Voice cloning (optional)
 TTS                # Coqui XTTS v2
-demucs             # Separacja wokali
+demucs             # Vocal separation
 
-# LLM (opcjonalne)
+# LLM (optional)
 openai             # GPT-4
 requests           # Ollama
 ```
 
 ---
 
-## Licencja
+## License
 
-MIT License - użyj do własnych projektów!
+GPL-2.0 License - use for your own projects!
 
-⚠️ **Uwaga prawna:** Voice cloning może naruszać prawa do wizerunku głosu artystów. Używaj tylko z własnym głosem lub za zgodą właściciela.
-
----
-
-## Powiązane dokumenty
-
-- 📘 [Dataset Builder - pełna dokumentacja](docs_v2/DATASET_BUILDER.md)
+⚠️ **Legal notice:** Voice cloning may violate artists' voice likeness rights. Use only with your own voice or with the owner's consent.
 
 ---
 
-*Dokumentacja wygenerowana: 12 grudnia 2025*
+## Related Documents
+
+- 📘 [Dataset Builder - Full Documentation](docs_v2/DATASET_BUILDER.md)
+
+---
+
+*Documentation generated: December 14, 2025*
+

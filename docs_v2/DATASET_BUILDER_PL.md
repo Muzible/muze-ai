@@ -1,17 +1,17 @@
-# 🎵 Dataset Builder v2 - Documentation
+# 🎵 Dataset Builder v2 - Dokumentacja
 
-> Automated pipeline for building music datasets
+> Automatyczny pipeline do budowania datasetów muzycznych
 
 ---
 
-## 📑 Table of Contents
+## 📑 Spis treści
 
-1. [Overview](#overview)
+1. [Przegląd](#przegląd)
 2. [Quick Start](#quick-start)
-3. [Pipeline Architecture](#pipeline-architecture)
-4. [CLI Arguments](#cli-arguments)
-5. [Feature Extraction](#feature-extraction)
-6. [Output Format](#output-format)
+3. [Architektura Pipeline](#architektura-pipeline)
+4. [Argumenty CLI](#argumenty-cli)
+5. [Ekstrakcja cech](#ekstrakcja-cech)
+6. [Format wyjściowy](#format-wyjściowy)
 7. [GPU vs CPU](#gpu-vs-cpu)
 8. [Checkpoint/Resume](#checkpointresume)
 9. [Sharding](#sharding)
@@ -19,17 +19,17 @@
 
 ---
 
-## Overview
+## Przegląd
 
-`build_dataset_v2.py` is a complete pipeline for preparing training datasets for Muze AI.
+`build_dataset_v2.py` to kompletny pipeline do przygotowania datasetu treningowego dla Muze AI.
 
-### Automatically extracts:
+### Automatycznie ekstrahuje:
 
-| Category | Features | Model/Tool |
-|----------|----------|------------|
+| Kategoria | Cechy | Model/Narzędzie |
+|-----------|-------|-----------------|
 | 🎵 Audio | tempo, key, energy, chroma, mel | librosa |
-| 🎤 Vocals | separation, voice embedding | Demucs, Resemblyzer/ECAPA-TDNN |
-| 📝 Lyrics | transcription, language, timestamps | Whisper large-v3 |
+| 🎤 Vocals | separacja, voice embedding | Demucs, Resemblyzer/ECAPA-TDNN |
+| 📝 Lyrics | transkrypcja, język, timestamps | Whisper large-v3 |
 | 🔤 Phonemes | IPA, per-word | Gruut/espeak-ng |
 | 🎼 Segments | verse/chorus/bridge detection | segment_annotator |
 | 🧠 Embeddings | CLAP (audio+text) | LAION CLAP |
@@ -41,7 +41,7 @@
 
 ## Quick Start
 
-### Minimal build (test)
+### Minimalny build (test)
 
 ```bash
 python build_dataset_v2.py \
@@ -51,7 +51,7 @@ python build_dataset_v2.py \
     --device cpu
 ```
 
-### Full build with GPU
+### Pełny build z GPU
 
 ```bash
 python build_dataset_v2.py \
@@ -63,7 +63,7 @@ python build_dataset_v2.py \
     --whisper_model large-v3
 ```
 
-### Time estimation
+### Szacowanie czasu
 
 ```bash
 python build_dataset_v2.py \
@@ -75,7 +75,7 @@ python build_dataset_v2.py \
 
 ---
 
-## Pipeline Architecture
+## Architektura Pipeline
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -125,86 +125,86 @@ python build_dataset_v2.py \
 
 ---
 
-## CLI Arguments
+## Argumenty CLI
 
 ### 📁 Input/Output
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--audio_dir` | **REQUIRED** | Folder with audio files |
-| `--output` | `./data_v2/training_dataset_v2.json` | Output JSON path |
-| `--vocals_output_dir` | `./data_v2/vocals` | Folder for extracted vocals |
+| Argument | Default | Opis |
+|----------|---------|------|
+| `--audio_dir` | **REQUIRED** | Folder z plikami audio |
+| `--output` | `./data_v2/training_dataset_v2.json` | Ścieżka wyjściowa JSON |
+| `--vocals_output_dir` | `./data_v2/vocals` | Folder na wokale |
 
-### 📋 Metadata
+### 📋 Metadane
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--tracks_csv` | None | CSV with track metadata |
-| `--genres_csv` | None | CSV with genre_id → name mapping |
-| `--metadata_mapping` | None | JSON with manual metadata |
+| Argument | Default | Opis |
+|----------|---------|------|
+| `--tracks_csv` | None | CSV z metadanymi tracków |
+| `--genres_csv` | None | CSV z mapowaniem genre_id → nazwa |
+| `--metadata_mapping` | None | JSON z ręcznymi metadanymi |
 
 ### 🎤 Whisper
 
-| Argument | Default | Description |
-|----------|---------|-------------|
+| Argument | Default | Opis |
+|----------|---------|------|
 | `--whisper_model` | `large-v3` | tiny/base/small/medium/large/large-v2/large-v3 |
 | `--device` | `cpu` | cpu/cuda |
 
 ### 🎹 F0/Pitch
 
-| Argument | Default | Description |
-|----------|---------|-------------|
+| Argument | Default | Opis |
+|----------|---------|------|
 | `--pitch_method` | `crepe` | crepe (accurate, default) / pyin (fast fallback) |
 
-> **Note:** CREPE requires TensorFlow. On macOS: `pip install tensorflow-macos`
+> **Note:** CREPE wymaga TensorFlow. Na macOS: `pip install tensorflow-macos`
 
 ### 🤖 LLM
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--llm_model` | `gpt-4o-mini` | OpenAI model |
-| `--llm_cache` | `./data_v2/.prompt_cache.json` | Prompts cache |
+| Argument | Default | Opis |
+|----------|---------|------|
+| `--llm_model` | `gpt-4o-mini` | Model OpenAI |
+| `--llm_cache` | `./data_v2/.prompt_cache.json` | Cache promptów |
 
 ### ⚙️ Processing
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--max_tracks` | None | Limit tracks |
-| `--min_segment` | 4.0 | Min. segment length (s) |
+| Argument | Default | Opis |
+|----------|---------|------|
+| `--max_tracks` | None | Limit tracków |
+| `--min_segment` | 4.0 | Min. długość segmentu (s) |
 | `--sample_rate` | 22050 | Sample rate |
-| `--no_segments` | False | Disable segmentation |
-| `--no_features` | False | Minimal extraction |
+| `--no_segments` | False | Wyłącz segmentację |
+| `--no_features` | False | Minimalna ekstrakcja |
 
 ### 🚀 Parallel Processing
 
-| Argument | Default | Description |
-|----------|---------|-------------|
+| Argument | Default | Opis |
+|----------|---------|------|
 | `--workers` | cpu_count-2 | CPU workers |
 | `--batch_size` | 1 | GPU batch size |
-| `--estimate_time` | False | Only estimate time |
+| `--estimate_time` | False | Tylko szacuj czas |
 
 ### 💾 Checkpoint/Resume
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--checkpoint_dir` | None | Checkpoint folder |
-| `--run_name` | None | Run name |
-| `--resume_run_id` | None | Run ID to resume |
-| `--merge` | False | Only merge checkpoints |
-| `--list_runs` | False | Show run list |
+| Argument | Default | Opis |
+|----------|---------|------|
+| `--checkpoint_dir` | None | Folder na checkpointy |
+| `--run_name` | None | Nazwa runu |
+| `--resume_run_id` | None | ID runu do wznowienia |
+| `--merge` | False | Tylko merguj checkpointy |
+| `--list_runs` | False | Pokaż listę runów |
 
 ### 📦 Sharding
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--shard_index` | None | Shard index (0-based) |
-| `--total_shards` | None | Total number of shards |
+| Argument | Default | Opis |
+|----------|---------|------|
+| `--shard_index` | None | Index shardu (0-based) |
+| `--total_shards` | None | Łączna liczba shardów |
 | `--shard_by` | `hash` | hash/alphabetical/directory |
-| `--merge_shards` | None | Files to merge |
+| `--merge_shards` | None | Pliki do zmergowania |
 
 ---
 
-## Feature Extraction
+## Ekstrakcja cech
 
 ### Per-Track Features
 
@@ -276,23 +276,23 @@ python build_dataset_v2.py \
 
 ## GPU vs CPU
 
-### Estimated Times
+### Szacunkowe czasy
 
-| Hardware | Time/track | 1000 tracks |
-|----------|------------|-------------|
+| Hardware | Czas/track | 1000 tracków |
+|----------|------------|--------------|
 | CPU only | ~70s | ~19h |
 | GTX 1080 | ~15s | ~4h |
 | RTX 3080 | ~8s | ~2.2h |
 | RTX 4090 | ~5s | ~1.4h |
 
-### VRAM Recommendations
+### Rekomendacje VRAM
 
-| VRAM | batch_size | Notes |
+| VRAM | batch_size | Uwagi |
 |------|------------|-------|
 | 6GB | 1 | Minimum |
-| 8GB | 2 | Safe |
-| 12GB | 3 | Optimal |
-| 16GB+ | 4 | Maximum |
+| 8GB | 2 | Bezpieczne |
+| 12GB | 3 | Optymalne |
+| 16GB+ | 4 | Maksymalne |
 
 ### Bottleneck Analysis
 
@@ -313,7 +313,7 @@ python build_dataset_v2.py \
 
 ## Checkpoint/Resume
 
-### Enable checkpoints
+### Włączenie
 
 ```bash
 python build_dataset_v2.py \
@@ -323,13 +323,13 @@ python build_dataset_v2.py \
     --output ./dataset.json
 ```
 
-### Resume interrupted build
+### Wznowienie
 
 ```bash
-# List runs
+# Lista runów
 python build_dataset_v2.py --checkpoint_dir ./checkpoints --list_runs
 
-# Resume
+# Wznów
 python build_dataset_v2.py \
     --audio_dir ./music \
     --checkpoint_dir ./checkpoints \
@@ -337,7 +337,7 @@ python build_dataset_v2.py \
     --output ./dataset.json
 ```
 
-### Merge checkpoints
+### Merge
 
 ```bash
 python build_dataset_v2.py \
@@ -367,7 +367,7 @@ python build_dataset_v2.py \
     --total_shards 4 \
     --output ./shard_1.json
 
-# Merge all shards
+# Merge
 python build_dataset_v2.py \
     --merge_shards shard_*.json \
     --output ./full_dataset.json
@@ -394,14 +394,14 @@ brew install espeak-ng
 sudo apt install espeak-ng
 ```
 
-### ❌ Slow processing
+### ❌ Wolne przetwarzanie
 
 ```bash
---estimate_time    # check estimated time
---device cuda      # use GPU
---workers 12       # increase parallelization
+--estimate_time    # sprawdź szacowany czas
+--device cuda      # użyj GPU
+--workers 12       # zwiększ paralelizację
 ```
 
 ---
 
-*Documentation: December 12, 2025*
+*Dokumentacja: 12 grudnia 2025*
