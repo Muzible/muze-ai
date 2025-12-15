@@ -539,7 +539,7 @@ muzible-muze-ai/
 ├── 📁 models/
 │   ├── 📄 audio_vae.py            # Audio VAE (audio → latent compression)
 │   ├── 📄 vocoder.py              # Vocoder (mel → waveform)
-│   └── 📄 voice_synthesis.py      # Voice cloning (XTTS, Demucs)
+│   └── 📄 voice_synthesis.py      # Voice cloning & singing (GPT-SoVITS, XTTS)
 │
 ├── 📁 models_v2/                  # 🆕 Architecture V2
 │   └── 📄 latent_diffusion.py     # U-Net V2 + all encoders
@@ -908,20 +908,226 @@ loss = reconstruction_loss + beta * kl_divergence + stft_loss
 
 ### 📄 `models/voice_synthesis.py`
 
-**Purpose:** Voice cloning and synthesis.
+**Purpose:** Voice cloning and singing voice synthesis.
 
-**Usage:**
+**Supported Backends:**
+| Backend | Type | License | Quality | Notes |
+|---------|------|---------|---------|-------|
+| **fish_speech** | Zero-shot TTS | Apache 2.0 | ⭐⭐⭐⭐⭐ | #1 TTS-Arena2, emotions, 10-30s sample |
+| **gpt_sovits** | Zero/Few-shot TTS | MIT | ⭐⭐⭐⭐⭐ | SOTA, 5s sample, EN/JA/KO/ZH |
+| coqui | XTTS v2 | Apache 2.0 | ⭐⭐⭐⭐ | Local, multilingual |
+| elevenlabs | API | Commercial | ⭐⭐⭐⭐⭐ | Best quality, paid |
+| bark | Local | MIT | ⭐⭐⭐ | Experimental |
+| rvc | Voice conversion | MIT | ⭐⭐⭐⭐ | Requires source audio |
+
+**Fish Speech Setup (Recommended - #1 Quality):**
+```bash
+# Option 1: Use Fish Audio cloud (easiest)
+# Get API key from https://fish.audio
+VoiceSynthesizer(backend="fish_speech", api_key="YOUR_KEY")
+
+# Option 2: Local server
+pip install fish-speech
+python -m fish_speech.webui.api --listen 0.0.0.0:8080
+
+# Option 3: HuggingFace Spaces (free demo)
+# https://huggingface.co/spaces/fishaudio/fish-speech-1
+```
+
+**Fish Speech Emotion Markers:**
 ```python
-# 1. Extract vocals
-extractor = VoiceExtractorFromSong()
-vocals_path = extractor.extract_vocals("song.mp3")
+# Basic emotions
+"(angry) I'm so frustrated! (sighing)"
+"(excited) We won the championship! (laughing)"
+"(sad) I miss you so much (sobbing)"
 
-# 2. Register voice
-synth = VoiceSynthesizer(backend="coqui")
-synth.register_voice("artist", vocals_path)
+# Tones
+"(whispering) This is a secret"
+"(shouting) Stop right there!"
 
-# 3. Synthesize new text
-audio = synth.synthesize("New lyrics...", voice="artist")
+# Effects  
+"(laughing)", "(crying loudly)", "(sighing)", "(panting)"
+```
+
+**GPT-SoVITS Setup:**
+```bash
+# Clone repo
+git clone https://github.com/RVC-Boss/GPT-SoVITS.git
+cd GPT-SoVITS
+
+# Install (choose CUDA version)
+bash install.sh --device CU126
+
+# Start API server
+python api_v2.py -a 0.0.0.0 -p 9880
+```
+
+**Usage with GPT-SoVITS:**
+```python
+from models.voice_synthesis import VoiceSynthesizer
+
+# Initialize with GPT-SoVITS
+synth = VoiceSynthesizer(
+    backend="gpt_sovits",
+    gpt_sovits_url="http://localhost:9880"
+)
+
+# Register voice (only needs 5 seconds!)
+synth.register_voice("singer", "voice_5sec.wav")
+
+# Synthesize singing
+audio = synth.synthesize(
+    text="I walk alone through empty streets",
+    voice="singer",
+    language="en"
+)
+```
+
+**Fish Speech Usage (alternative, #1 TTS-Arena2):**
+```python
+from models.voice_synthesis import VoiceSynthesizer
+
+# Initialize with Fish Speech
+synth = VoiceSynthesizer(
+    backend="fish_speech",
+    fish_speech_url="http://localhost:8080"  # Local server
+    # Or use cloud: api_key="your_fish_audio_key"
+)
+
+# Register voice (10-30s sample)
+synth.register_voice("singer", "voice_30sec.wav")
+
+# Synthesize with emotion markers!
+audio = synth.synthesize(
+    text="(excited) I can't believe we won! (laughing)",
+    voice="singer",
+    language="en"
+)
+```
+
+**CLI Usage (inference_v2.py):**
+```bash
+# Generate instrumental + synthesized vocals (GPT-SoVITS)
+python inference_v2.py \
+    --prompt "Epic ballad with dramatic strings" \
+    --lyrics "I walk alone through empty streets" \
+    --sing_lyrics \
+    --singing_voice_ref ./voice_sample.wav \
+    --singing_backend gpt_sovits \
+    --gpt_sovits_url http://localhost:9880 \
+    --mix_vocals 0.7 \
+    --duration 120
+
+# Using Fish Speech (best quality, #1 TTS-Arena2)
+python inference_v2.py \
+    --prompt "Emotional pop song" \
+    --lyrics "(sad) Every moment I think of you (sighing)" \
+    --sing_lyrics \
+    --singing_voice_ref ./voice_sample.wav \
+    --singing_backend fish_speech \
+    --fish_speech_url http://localhost:8080 \
+    --duration 120
+
+# Using Fish Audio cloud API
+python inference_v2.py \
+    --prompt "Dance track" \
+    --lyrics "(excited) Let's go!" \
+    --sing_lyrics \
+    --singing_voice_ref ./voice_sample.wav \
+    --singing_backend fish_speech \
+    --fish_speech_api_key YOUR_API_KEY \
+    --duration 120
+```
+
+---
+
+### 🎯 Vocal Alignment Pipeline
+
+**Problem:** TTS generuje wokal bez wiedzy o strukturze piosenki - gdzie intro, verse, chorus?
+
+**Rozwiązanie:** Inteligentny pipeline alignmentu wokali do instrumentalu.
+
+#### Flow syntezy wokali:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  STEP 1: LDM generuje instrumental (z phonemes conditioning)            │
+│          ↓                                                              │
+│  STEP 2: Demucs stripuje przypadkowe wokale z LDM (--strip_ldm_vocals)  │
+│          ↓                                                              │
+│  STEP 3: Wykrywanie regionów wokalnych                                  │
+│          - Priorytet: CompositionPlan (wie gdzie verse/chorus!)         │
+│          - Fallback: Beat detection + energy analysis                   │
+│          ↓                                                              │
+│  STEP 4: GPT-SoVITS / Fish Speech generuje TTS wokal                    │
+│          ↓                                                              │
+│  STEP 5: Alignment - dopasowanie wokali do regionów                     │
+│          - Time stretch (0.77x - 1.3x, naturalny zakres)                │
+│          - Proporcjonalna dystrybucja po sekcjach                       │
+│          - 30ms fades dla gładkich przejść                              │
+│          ↓                                                              │
+│  STEP 6: Mix instrumental + aligned vocals                              │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Wykrywanie regionów (`detect_vocal_regions()`):
+
+**1. Z CompositionPlan (najlepsze):**
+```python
+# Plan wie gdzie są sekcje z wokalami:
+plan.sections = [
+    Section(type="intro", duration=8, has_vocals=False),   # ← pomijamy
+    Section(type="verse", duration=32, has_vocals=True),   # ← WOKAL
+    Section(type="chorus", duration=24, has_vocals=True),  # ← WOKAL
+    Section(type="bridge", duration=16, has_vocals=False), # ← pomijamy
+]
+
+# Generowane regiony:
+[(8.5, 39.5), (40.5, 63.5)]  # 0.5s offset na początku/końcu
+```
+
+**2. Fallback - Beat + Energy analysis:**
+```python
+# Jeśli plan nie dostępny:
+# 1. Librosa beat tracking → snap do downbeatów
+# 2. Energy analysis → regiony o umiarkowanej energii (10-80%)
+```
+
+#### Alignment wokali (`align_vocals_to_instrumental()`):
+
+| Parametr | Wartość | Opis |
+|----------|---------|------|
+| Time stretch min | 0.77x | Maksymalne przyspieszenie (naturalne) |
+| Time stretch max | 1.3x | Maksymalne spowolnienie |
+| Fade duration | 30ms | Gładkie przejścia między sekcjami |
+| Section offset | 0.5s | Opóźnienie na początku każdej sekcji |
+
+#### CLI flagi alignmentu:
+
+```bash
+# Domyślne (bezpieczne - stripuje LDM vocals, używa planu)
+python inference_v2.py \
+    --prompt "Rock ballad" \
+    --lyrics "I walk alone..." \
+    --sing_lyrics \
+    --singing_voice_ref voice.wav
+
+# Szybkie (bez Demucs - dla czystych instrumentali)
+python inference_v2.py \
+    --prompt "Instrumental jazz" \
+    --lyrics "..." \
+    --sing_lyrics \
+    --no_strip_ldm_vocals \
+    --singing_voice_ref voice.wav
+```
+
+#### Pliki wyjściowe:
+
+```
+output/
+  ├── output.wav          # Finalny mix (instrumental + aligned vocals)
+  ├── output_vocals.wav   # Tylko aligned vocals (do debugowania)
+  └── output.json         # Metadata z planem sekcji
 ```
 
 ---

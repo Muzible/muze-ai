@@ -54,6 +54,36 @@ Usage:
         --language pl \
         --voice_clone "Doda" \
         --duration 120
+
+    # 🎤 SING LYRICS: Generate instrumental + synthesized vocals (GPT-SoVITS)
+    # Flow: LDM → Demucs (strip any vocals) → GPT-SoVITS vocals → Mix
+    python inference_v2.py \\
+        --prompt "Epic orchestral ballad with dramatic strings" \\
+        --lyrics "I walk alone through empty streets, searching for your light" \\
+        --sing_lyrics \\
+        --singing_voice_ref ./my_voice_5sec.wav \\
+        --singing_backend gpt_sovits \\
+        --duration 120
+    
+    # 🐟 Fish Speech (best quality, #1 TTS-Arena2, supports emotions)
+    python inference_v2.py \\
+        --prompt "Pop song with emotional vocals" \\
+        --lyrics "(excited) Every moment I think of you! (sighing)" \\
+        --sing_lyrics \\
+        --singing_voice_ref ./singer_sample.wav \\
+        --singing_backend fish_speech \\
+        --fish_speech_url http://localhost:8080 \\
+        --mix_vocals 0.8 \\
+        --duration 180
+    
+    # ⚡ Fast mode (skip Demucs vocal stripping - use if LDM is instrumental-only)
+    python inference_v2.py \\
+        --prompt "Instrumental electronic track" \\
+        --lyrics "Dancing through the night" \\
+        --sing_lyrics \\
+        --singing_voice_ref ./voice.wav \\
+        --no_strip_ldm_vocals \\
+        --duration 120
 """
 
 import os
@@ -61,7 +91,7 @@ import sys
 import json
 import argparse
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Tuple
 
 import torch
 import torchaudio
@@ -1013,6 +1043,559 @@ def generate_full_song(
     return final_audio
 
 
+# ============================================
+# 🎤 Singing Voice Synthesis (GPT-SoVITS / Fish Speech)
+# ============================================
+
+def synthesize_vocals(
+    lyrics_text: str,
+    reference_audio: str,
+    language: str = None,
+    backend: str = "gpt_sovits",
+    gpt_sovits_url: str = "http://localhost:9880",
+    fish_speech_url: str = "http://localhost:8080",
+    fish_speech_api_key: str = None,
+    device: str = "cpu",
+) -> Tuple[torch.Tensor, int]:
+    """
+    Synthesize singing vocals from lyrics using GPT-SoVITS, Fish Speech, or other backends.
+    
+    Backends:
+    - gpt_sovits: GPT-SoVITS (MIT, 5s sample, EN/JA/KO/ZH)
+    - fish_speech: Fish Speech / OpenAudio S1 (#1 TTS-Arena2, Apache 2.0)
+    - coqui: XTTS v2 (Apache 2.0, multilingual)
+    - elevenlabs: ElevenLabs API (best quality, paid)
+    
+    Fish Speech Features:
+    - #1 on TTS-Arena2 benchmark
+    - Zero-shot: 10-30s reference audio
+    - Emotion control: (angry), (excited), (sad), etc.
+    - Multilingual: EN, JA, KO, ZH, FR, DE, AR, ES
+    
+    Args:
+        lyrics_text: Text to sing (supports emotion markers for fish_speech)
+        reference_audio: Path to voice reference (5-30s WAV/MP3)
+        language: Language code (auto-detected if None)
+        backend: "gpt_sovits", "fish_speech", "coqui", or "elevenlabs"
+        gpt_sovits_url: GPT-SoVITS API server URL
+        fish_speech_url: Fish Speech API server URL
+        fish_speech_api_key: Fish Audio cloud API key (optional)
+        device: cpu/cuda/mps
+        
+    Returns:
+        Tuple[audio_tensor, sample_rate]
+        
+    Example:
+        vocals, sr = synthesize_vocals(
+            lyrics_text="I walk alone through empty streets",
+            reference_audio="./voice_sample.wav",
+            backend="gpt_sovits"
+        )
+    """
+    from models.voice_synthesis import VoiceSynthesizer
+    
+    print(f"\n🎤 Synthesizing vocals with {backend}...")
+    print(f"   Lyrics: {lyrics_text[:80]}{'...' if len(lyrics_text) > 80 else ''}")
+    print(f"   Reference: {Path(reference_audio).name}")
+    
+    # Initialize synthesizer
+    synth_kwargs = {
+        "backend": backend,
+        "device": device,
+    }
+    
+    if backend == "gpt_sovits":
+        synth_kwargs["gpt_sovits_url"] = gpt_sovits_url
+    elif backend == "fish_speech":
+        synth_kwargs["fish_speech_url"] = fish_speech_url
+        if fish_speech_api_key:
+            synth_kwargs["api_key"] = fish_speech_api_key
+    
+    synth = VoiceSynthesizer(**synth_kwargs)
+    
+    # Register the reference voice
+    synth.register_voice(
+        name="singing_voice",
+        reference_audio=reference_audio,
+        description="Voice for singing synthesis",
+        source_type="recording",
+    )
+    
+    # Auto-detect language if not specified
+    if language is None:
+        processor = get_phoneme_processor()
+        language = processor.detect_language(lyrics_text)
+        print(f"   Auto-detected language: {language}")
+    
+    # Synthesize
+    audio = synth.synthesize(
+        text=lyrics_text,
+        voice="singing_voice",
+        language=language,
+        speed=1.0,
+    )
+    
+    # Get sample rate from model
+    if backend == "gpt_sovits":
+        sample_rate = 32000  # GPT-SoVITS v2/v3 default
+    elif backend == "fish_speech":
+        sample_rate = 44100  # Fish Speech default
+    elif backend == "coqui":
+        sample_rate = 22050  # XTTS default
+    else:
+        sample_rate = 22050  # Default
+    
+    print(f"   ✅ Synthesized {audio.shape[-1] / sample_rate:.1f}s of vocals")
+    
+    return audio, sample_rate
+
+
+def extract_clean_instrumental(
+    audio: torch.Tensor,
+    sample_rate: int = 22050,
+    device: str = "cpu",
+) -> Tuple[torch.Tensor, bool]:
+    """
+    Extract clean instrumental from LDM output using Demucs.
+    
+    If LDM accidentally generated vocal-like sounds, this removes them
+    to prevent double-vocals when mixing with TTS.
+    
+    Args:
+        audio: Audio tensor from LDM
+        sample_rate: Sample rate of audio
+        device: cpu/cuda/mps
+        
+    Returns:
+        Tuple[instrumental_audio, had_vocals]
+        - instrumental_audio: Clean instrumental (vocals removed if any)
+        - had_vocals: True if vocals were detected and removed
+    """
+    print(f"\n🔍 Checking LDM output for accidental vocals...")
+    
+    try:
+        from models.voice_synthesis import VoiceExtractorFromSong
+        import tempfile
+        
+        # Save audio to temp file for Demucs
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+            temp_path = f.name
+        
+        # Ensure proper shape for saving
+        audio_save = audio.squeeze()
+        if audio_save.dim() == 1:
+            audio_save = audio_save.unsqueeze(0)
+        torchaudio.save(temp_path, audio_save.cpu(), sample_rate)
+        
+        # Initialize Demucs
+        extractor = VoiceExtractorFromSong(
+            separation_model="demucs",
+            device=device,
+        )
+        extractor._init_separator()
+        
+        # Load and prepare audio for Demucs (needs 44100 Hz)
+        audio_44k, sr = torchaudio.load(temp_path)
+        if sr != 44100:
+            audio_44k = torchaudio.functional.resample(audio_44k, sr, 44100)
+        
+        # Ensure stereo
+        if audio_44k.shape[0] == 1:
+            audio_44k = audio_44k.repeat(2, 1)
+        
+        # Run Demucs separation
+        audio_44k = audio_44k.unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            sources = extractor._separator["apply"](
+                extractor._separator["model"],
+                audio_44k,
+                device=device,
+            )
+        
+        # Sources order: drums, bass, other, vocals
+        # Get everything EXCEPT vocals (sum drums + bass + other)
+        instrumental = sources[0, 0] + sources[0, 1] + sources[0, 2]  # [2, samples]
+        vocals = sources[0, 3]  # [2, samples]
+        
+        # Check if there were actual vocals
+        vocals_rms = torch.sqrt(torch.mean(vocals ** 2)).item()
+        instrumental_rms = torch.sqrt(torch.mean(instrumental ** 2)).item()
+        
+        # Vocal detection threshold
+        vocal_ratio = vocals_rms / (instrumental_rms + 1e-8)
+        had_vocals = vocal_ratio > 0.05  # If vocals are >5% of instrumental energy
+        
+        if had_vocals:
+            print(f"   ⚠️ Vocals detected in LDM output! (ratio: {vocal_ratio:.2%})")
+            print(f"   🧹 Removing LDM vocals to prevent double-voice...")
+            
+            # Resample instrumental back to original sample rate
+            instrumental = instrumental.cpu()
+            if sample_rate != 44100:
+                instrumental = torchaudio.functional.resample(
+                    instrumental, 44100, sample_rate
+                )
+            
+            # Convert to mono if original was mono
+            if audio.squeeze().dim() == 1:
+                instrumental = instrumental.mean(dim=0)
+            
+            print(f"   ✅ Clean instrumental extracted")
+        else:
+            print(f"   ✅ No vocals detected (ratio: {vocal_ratio:.2%}) - using original")
+            instrumental = audio
+        
+        # Cleanup
+        import os
+        os.unlink(temp_path)
+        
+        return instrumental, had_vocals
+        
+    except Exception as e:
+        print(f"   ⚠️ Demucs separation failed: {e}")
+        print(f"   Using original audio (risk of double-vocals)")
+        return audio, False
+
+
+def detect_vocal_regions(
+    audio: torch.Tensor,
+    sample_rate: int = 22050,
+    hop_length: int = 512,
+    energy_threshold: float = 0.02,
+    min_silence_duration: float = 0.3,
+    composition_plan = None,  # NEW: Use plan if available
+) -> List[Tuple[float, float]]:
+    """
+    Detect regions in instrumental where vocals should be placed.
+    
+    Priority order:
+    1. If composition_plan provided → use sections with has_vocals=True
+    2. Fallback: analyze energy envelope
+    
+    Args:
+        audio: Instrumental audio tensor
+        sample_rate: Sample rate
+        hop_length: Analysis hop length
+        energy_threshold: Threshold for detecting low-energy regions
+        min_silence_duration: Minimum duration of silence to consider
+        composition_plan: Optional CompositionPlan with section info
+        
+    Returns:
+        List of (start_time, end_time) tuples for vocal regions
+    """
+    import numpy as np
+    
+    # =========================================
+    # BEST: Use composition plan (knows structure!)
+    # =========================================
+    if composition_plan is not None and hasattr(composition_plan, 'sections'):
+        regions = []
+        current_time = 0.0
+        
+        for section in composition_plan.sections:
+            section_start = current_time
+            section_end = current_time + section.duration
+            
+            # Only include sections marked for vocals
+            if getattr(section, 'has_vocals', False):
+                # Skip first 0.5s of each section (let music establish)
+                vocal_start = section_start + 0.5
+                # End 0.5s before section ends (outro transition)
+                vocal_end = section_end - 0.5
+                
+                if vocal_end > vocal_start:
+                    regions.append((vocal_start, vocal_end))
+                    print(f"   📍 {section.section_type}: {vocal_start:.1f}s - {vocal_end:.1f}s")
+            
+            current_time = section_end
+        
+        if regions:
+            print(f"   ✅ Using CompositionPlan: {len(regions)} vocal sections")
+            return regions
+        else:
+            print(f"   ⚠️ No vocal sections in plan, falling back to energy analysis")
+    
+    # =========================================
+    # FALLBACK: Energy-based detection
+    # =========================================
+    audio_np = audio.squeeze().cpu().numpy()
+    
+    # Calculate RMS energy in frames
+    frame_length = hop_length * 4
+    num_frames = len(audio_np) // hop_length
+    
+    energy = []
+    for i in range(num_frames):
+        start = i * hop_length
+        end = min(start + frame_length, len(audio_np))
+        frame = audio_np[start:end]
+        rms = np.sqrt(np.mean(frame ** 2))
+        energy.append(rms)
+    
+    energy = np.array(energy)
+    
+    # Normalize energy
+    max_energy = np.max(energy) + 1e-8
+    energy_norm = energy / max_energy
+    
+    # Find regions with moderate energy (good for vocals)
+    # Not too quiet (no music), not too loud (would clash)
+    good_for_vocals = (energy_norm > 0.1) & (energy_norm < 0.8)
+    
+    # Convert frames to time
+    frame_duration = hop_length / sample_rate
+    
+    # Find continuous regions
+    regions = []
+    in_region = False
+    region_start = 0
+    
+    for i, good in enumerate(good_for_vocals):
+        if good and not in_region:
+            in_region = True
+            region_start = i * frame_duration
+        elif not good and in_region:
+            in_region = False
+            region_end = i * frame_duration
+            if region_end - region_start >= min_silence_duration:
+                regions.append((region_start, region_end))
+    
+    # Handle last region
+    if in_region:
+        region_end = len(good_for_vocals) * frame_duration
+        if region_end - region_start >= min_silence_duration:
+            regions.append((region_start, region_end))
+    
+    # =========================================
+    # ENHANCEMENT: Snap to beats
+    # =========================================
+    try:
+        import librosa
+        
+        # Detect beats
+        tempo, beat_frames = librosa.beat.beat_track(
+            y=audio_np, 
+            sr=sample_rate,
+            hop_length=hop_length
+        )
+        beat_times = librosa.frames_to_time(beat_frames, sr=sample_rate, hop_length=hop_length)
+        
+        if len(beat_times) > 0:
+            # Snap region starts/ends to nearest beat
+            snapped_regions = []
+            for start, end in regions:
+                # Find nearest beat to start
+                start_idx = np.argmin(np.abs(beat_times - start))
+                snapped_start = beat_times[start_idx]
+                
+                # Find nearest beat to end
+                end_idx = np.argmin(np.abs(beat_times - end))
+                snapped_end = beat_times[end_idx]
+                
+                if snapped_end > snapped_start + 1.0:  # At least 1 second
+                    snapped_regions.append((snapped_start, snapped_end))
+            
+            if snapped_regions:
+                print(f"   🎵 Beat-aligned {len(snapped_regions)} regions (tempo: {tempo:.0f} BPM)")
+                return snapped_regions
+    except Exception as e:
+        print(f"   ⚠️ Beat detection failed: {e}, using raw regions")
+    
+    return regions
+
+
+def align_vocals_to_instrumental(
+    vocals: torch.Tensor,
+    vocals_sr: int,
+    instrumental_duration: float,
+    vocal_regions: List[Tuple[float, float]],
+    target_sr: int = 22050,
+) -> torch.Tensor:
+    """
+    Align TTS vocals to detected vocal regions in instrumental.
+    
+    Stretches/compresses vocals to fit into detected regions,
+    with silence padding for intro/outro.
+    
+    Args:
+        vocals: TTS vocal audio tensor
+        vocals_sr: Sample rate of vocals
+        instrumental_duration: Total duration of instrumental
+        vocal_regions: List of (start, end) times for vocals
+        target_sr: Target sample rate
+        
+    Returns:
+        Aligned vocals tensor matching instrumental duration
+    """
+    # Resample vocals to target SR
+    if vocals_sr != target_sr:
+        vocals = torchaudio.functional.resample(vocals, vocals_sr, target_sr)
+    
+    vocals = vocals.squeeze()
+    if vocals.dim() == 0:
+        vocals = vocals.unsqueeze(0)
+    
+    total_samples = int(instrumental_duration * target_sr)
+    aligned = torch.zeros(total_samples)
+    
+    if not vocal_regions:
+        # No regions detected - start vocals from beginning with 2s offset
+        offset_samples = int(2.0 * target_sr)
+        vocals_len = min(len(vocals), total_samples - offset_samples)
+        aligned[offset_samples:offset_samples + vocals_len] = vocals[:vocals_len]
+        print(f"   ⚠️ No vocal regions - placing vocals at 2s offset")
+        return aligned
+    
+    # Calculate total available time for vocals
+    total_region_duration = sum(end - start for start, end in vocal_regions)
+    vocals_duration = len(vocals) / target_sr
+    
+    print(f"   🎯 Vocal alignment:")
+    print(f"      Detected {len(vocal_regions)} vocal regions")
+    print(f"      Total region time: {total_region_duration:.1f}s")
+    print(f"      TTS vocals duration: {vocals_duration:.1f}s")
+    
+    # Strategy: distribute vocals across regions proportionally
+    # If vocals shorter → pad with silence between sections
+    # If vocals longer → speed up slightly (max 1.3x) or truncate
+    
+    if vocals_duration > total_region_duration * 1.3:
+        # Vocals way too long - truncate
+        print(f"      ⚠️ Vocals too long, truncating to fit")
+        max_samples = int(total_region_duration * 1.3 * target_sr)
+        vocals = vocals[:max_samples]
+        vocals_duration = len(vocals) / target_sr
+    
+    # Time stretch factor (gentle - max 1.3x speed)
+    stretch_factor = total_region_duration / vocals_duration if vocals_duration > 0 else 1.0
+    stretch_factor = max(0.77, min(1.3, stretch_factor))  # 0.77x-1.3x range
+    
+    if abs(stretch_factor - 1.0) > 0.05:
+        print(f"      Time stretch: {stretch_factor:.2f}x")
+        # Apply time stretch via resampling
+        intermediate_sr = int(target_sr * stretch_factor)
+        vocals = torchaudio.functional.resample(
+            vocals.unsqueeze(0), target_sr, intermediate_sr
+        ).squeeze()
+        vocals = torchaudio.functional.resample(
+            vocals.unsqueeze(0), intermediate_sr, target_sr  
+        ).squeeze()
+    
+    # Place vocals in regions sequentially
+    vocals_pos = 0
+    for i, (start_time, end_time) in enumerate(vocal_regions):
+        start_sample = int(start_time * target_sr)
+        end_sample = int(end_time * target_sr)
+        region_samples = end_sample - start_sample
+        
+        # How much vocals to place in this region
+        remaining_vocals = len(vocals) - vocals_pos
+        remaining_regions = len(vocal_regions) - i
+        
+        # Distribute remaining vocals across remaining regions
+        vocals_for_region = min(
+            region_samples,
+            remaining_vocals // remaining_regions if remaining_regions > 0 else remaining_vocals
+        )
+        
+        if vocals_for_region <= 0:
+            break
+        
+        # Get segment with fades
+        segment = vocals[vocals_pos:vocals_pos + vocals_for_region].clone()
+        
+        # Apply fades for smooth transitions
+        fade_samples = min(int(0.03 * target_sr), len(segment) // 4)  # 30ms fade
+        if fade_samples > 0 and len(segment) > fade_samples * 2:
+            fade_in = torch.linspace(0, 1, fade_samples)
+            fade_out = torch.linspace(1, 0, fade_samples)
+            segment[:fade_samples] *= fade_in
+            segment[-fade_samples:] *= fade_out
+        
+        # Place in aligned output
+        place_end = min(start_sample + len(segment), total_samples)
+        actual_len = place_end - start_sample
+        aligned[start_sample:place_end] = segment[:actual_len]
+        
+        vocals_pos += vocals_for_region
+    
+    placed_duration = vocals_pos / target_sr
+    print(f"      ✅ Placed {placed_duration:.1f}s of vocals across {len(vocal_regions)} regions")
+    
+    return aligned
+
+
+def mix_vocals_with_instrumental(
+    instrumental: torch.Tensor,
+    vocals: torch.Tensor,
+    instrumental_sr: int,
+    vocals_sr: int,
+    mix_level: float = 0.7,
+    target_sr: int = 22050,
+) -> torch.Tensor:
+    """
+    Mix synthesized vocals with generated instrumental track.
+    
+    Args:
+        instrumental: Instrumental audio tensor
+        vocals: Vocals audio tensor
+        instrumental_sr: Sample rate of instrumental
+        vocals_sr: Sample rate of vocals
+        mix_level: Vocals volume (0.0-1.0), default 0.7
+        target_sr: Output sample rate
+        
+    Returns:
+        Mixed audio tensor at target_sr
+    """
+    print(f"\n🎚️ Mixing vocals with instrumental...")
+    print(f"   Vocals level: {mix_level:.0%}")
+    
+    # Ensure same sample rate
+    if instrumental_sr != target_sr:
+        instrumental = torchaudio.functional.resample(
+            instrumental, instrumental_sr, target_sr
+        )
+    
+    if vocals_sr != target_sr:
+        vocals = torchaudio.functional.resample(
+            vocals, vocals_sr, target_sr
+        )
+    
+    # Ensure proper dimensions
+    if instrumental.dim() == 1:
+        instrumental = instrumental.unsqueeze(0)
+    if vocals.dim() == 1:
+        vocals = vocals.unsqueeze(0)
+    
+    # Match lengths - pad shorter with silence
+    inst_len = instrumental.shape[-1]
+    voc_len = vocals.shape[-1]
+    
+    if voc_len < inst_len:
+        # Pad vocals to match instrumental
+        padding = torch.zeros(vocals.shape[0], inst_len - voc_len, device=vocals.device)
+        vocals = torch.cat([vocals, padding], dim=-1)
+        print(f"   Padded vocals: {voc_len/target_sr:.1f}s → {inst_len/target_sr:.1f}s")
+    elif voc_len > inst_len:
+        # Truncate vocals
+        vocals = vocals[..., :inst_len]
+        print(f"   Truncated vocals: {voc_len/target_sr:.1f}s → {inst_len/target_sr:.1f}s")
+    
+    # Mix: instrumental at full level, vocals at mix_level
+    # This gives vocals presence while preserving the instrumental
+    mixed = instrumental * (1 - mix_level * 0.3) + vocals * mix_level
+    
+    # Normalize to prevent clipping
+    max_val = mixed.abs().max()
+    if max_val > 0.95:
+        mixed = mixed / max_val * 0.95
+    
+    print(f"   ✅ Mixed audio: {mixed.shape[-1] / target_sr:.1f}s")
+    
+    return mixed.squeeze()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='🎵 Muzible Muze AI v2 - Section-Aware Music Generation'
@@ -1062,6 +1645,33 @@ def main():
     parser.add_argument('--language', type=str, default=None,
                         help='Language code for lyrics (en, pl, de, fr, es, etc). Auto-detected if not specified')
     
+    # ============================================
+    # 🎤 Singing Voice Synthesis Options (GPT-SoVITS / Fish Speech)
+    # ============================================
+    parser.add_argument('--sing_lyrics', action='store_true',
+                        help='Actually SING the lyrics (synthesize vocals)')
+    parser.add_argument('--singing_backend', type=str, default='gpt_sovits',
+                        choices=['gpt_sovits', 'fish_speech', 'coqui', 'elevenlabs'],
+                        help='Backend for singing synthesis (default: gpt_sovits). '
+                             'fish_speech is #1 on TTS-Arena2')
+    parser.add_argument('--gpt_sovits_url', type=str, default='http://localhost:9880',
+                        help='GPT-SoVITS API server URL')
+    parser.add_argument('--fish_speech_url', type=str, default='http://localhost:8080',
+                        help='Fish Speech API server URL')
+    parser.add_argument('--fish_speech_api_key', type=str, default=None,
+                        help='Fish Audio cloud API key (get from fish.audio)')
+    parser.add_argument('--gpt_sovits_model', type=str, default=None,
+                        help='Path to fine-tuned GPT-SoVITS model (optional)')
+    parser.add_argument('--singing_voice_ref', type=str, default=None,
+                        help='Reference audio for singing voice (5-30s sample)')
+    parser.add_argument('--mix_vocals', type=float, default=0.7,
+                        help='Mix level for vocals vs instrumental (0.0-1.0, default: 0.7)')
+    parser.add_argument('--strip_ldm_vocals', action='store_true', default=True,
+                        help='Use Demucs to strip any accidental vocals from LDM output '
+                             'before mixing with TTS vocals (prevents double-voice). Default: True')
+    parser.add_argument('--no_strip_ldm_vocals', action='store_false', dest='strip_ldm_vocals',
+                        help='Disable stripping LDM vocals (faster but may cause double-voice)')
+    
     # Model paths
     parser.add_argument('--vae_checkpoint', type=str, 
                         default='./checkpoints/vae_best.pt')
@@ -1091,6 +1701,10 @@ def main():
     voice_args_set = sum(1 for a in voice_args if a is not None)
     if voice_args_set > 1:
         parser.error("Only one of --style_of, --voice_clone, --voice_clone_samples, --voice_ref can be used")
+    
+    # Validate singing synthesis args
+    if args.sing_lyrics and not args.lyrics and not args.lyrics_file:
+        parser.error("--sing_lyrics requires --lyrics or --lyrics_file")
     
     # Set seed
     if args.seed is not None:
@@ -1180,10 +1794,105 @@ def main():
         phonemes_ipa=phonemes_ipa,  # 📝 Pass phonemes
     )
     
-    # Save
+    # Output path (needed for vocals saving)
     output_path = Path(args.output)
     output_path.parent.mkdir(exist_ok=True)
     
+    # ============================================
+    # 🎤 Singing Voice Synthesis (GPT-SoVITS / Fish Speech)
+    # ============================================
+    if args.sing_lyrics and lyrics_text:
+        if not args.singing_voice_ref:
+            print("\n⚠️ --sing_lyrics requires --singing_voice_ref (path to voice sample)")
+            print("   Skipping vocal synthesis...")
+        else:
+            voice_ref_path = Path(args.singing_voice_ref)
+            if not voice_ref_path.exists():
+                print(f"\n⚠️ Voice reference not found: {voice_ref_path}")
+                print("   Skipping vocal synthesis...")
+            else:
+                try:
+                    # ============================================
+                    # STEP 1: Strip accidental vocals from LDM output
+                    # (prevents double-voice when mixing with TTS)
+                    # ============================================
+                    instrumental = audio
+                    if args.strip_ldm_vocals:
+                        instrumental, had_ldm_vocals = extract_clean_instrumental(
+                            audio=audio,
+                            sample_rate=22050,
+                            device=args.device,
+                        )
+                        if had_ldm_vocals:
+                            # Save LDM vocals for debugging
+                            ldm_vocals_path = output_path.parent / f"{output_path.stem}_ldm_vocals_removed.wav"
+                            # Note: we don't save them by default, just log
+                            print(f"   (LDM vocals were stripped to prevent double-voice)")
+                    
+                    # ============================================
+                    # STEP 2: Detect vocal regions using CompositionPlan
+                    # (knows exactly where verse/chorus are!)
+                    # ============================================
+                    instrumental_duration = instrumental.shape[-1] / 22050
+                    vocal_regions = detect_vocal_regions(
+                        audio=instrumental,
+                        sample_rate=22050,
+                        composition_plan=plan,  # Use plan for precise section timing!
+                    )
+                    
+                    # ============================================
+                    # STEP 3: Synthesize TTS vocals from lyrics
+                    # ============================================
+                    vocals_audio, vocals_sr = synthesize_vocals(
+                        lyrics_text=lyrics_text,
+                        reference_audio=str(voice_ref_path),
+                        language=args.language,
+                        backend=args.singing_backend,
+                        gpt_sovits_url=args.gpt_sovits_url,
+                        fish_speech_url=args.fish_speech_url,
+                        fish_speech_api_key=args.fish_speech_api_key,
+                        device=args.device,
+                    )
+                    
+                    # ============================================
+                    # STEP 4: Align vocals to detected regions
+                    # (time-stretch and place vocals where they fit)
+                    # ============================================
+                    aligned_vocals = align_vocals_to_instrumental(
+                        vocals=vocals_audio,
+                        vocals_sr=vocals_sr,
+                        instrumental_duration=instrumental_duration,
+                        vocal_regions=vocal_regions,
+                        target_sr=22050,
+                    )
+                    
+                    # ============================================
+                    # STEP 5: Mix aligned vocals with instrumental
+                    # ============================================
+                    audio = mix_vocals_with_instrumental(
+                        instrumental=instrumental,  # Clean instrumental (LDM vocals stripped)
+                        vocals=aligned_vocals,      # Aligned TTS vocals
+                        instrumental_sr=22050,
+                        vocals_sr=22050,  # Already resampled in align function
+                        mix_level=args.mix_vocals,
+                        target_sr=22050,
+                    )
+                    
+                    # Also save vocals-only version
+                    vocals_output = output_path.parent / f"{output_path.stem}_vocals.wav"
+                    vocals_cpu = aligned_vocals.squeeze().cpu()
+                    if vocals_cpu.dim() == 1:
+                        vocals_cpu = vocals_cpu.unsqueeze(0)
+                    torchaudio.save(str(vocals_output), vocals_cpu, 22050)
+                    print(f"   💾 Vocals saved to: {vocals_output}")
+                    
+                except Exception as e:
+                    print(f"\n❌ Vocal synthesis failed: {e}")
+                    print("   Saving instrumental only...")
+                    import traceback
+                    traceback.print_exc()
+    
+    # Save final output
     audio_cpu = audio.squeeze().cpu()
     torchaudio.save(str(output_path), audio_cpu.unsqueeze(0), 22050)
     
@@ -1208,6 +1917,12 @@ def main():
             'language': args.language,
             'phonemes_ipa': phonemes_ipa,
             'has_lyrics': phonemes_ipa is not None,
+        },
+        'singing': {
+            'enabled': args.sing_lyrics,
+            'backend': args.singing_backend if args.sing_lyrics else None,
+            'voice_ref': args.singing_voice_ref,
+            'mix_level': args.mix_vocals if args.sing_lyrics else None,
         },
         'sections': [
             {

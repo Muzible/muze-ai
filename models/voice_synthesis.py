@@ -345,9 +345,26 @@ class VoiceSynthesizer:
     - elevenlabs: ElevenLabs API (najlepsza jakość)
     - bark: Bark by Facebook (lokalne)
     - rvc: RVC voice conversion
+    - gpt_sovits: GPT-SoVITS (SOTA zero/few-shot TTS, MIT license)
+    - fish_speech: Fish Speech / OpenAudio S1 (#1 TTS-Arena2, Apache 2.0)
+    
+    GPT-SoVITS Features:
+    - Zero-shot TTS: 5s sample → instant voice cloning
+    - Few-shot TTS: 1min training → perfect voice match
+    - Cross-lingual: EN, JA, KO, ZH, Cantonese
+    - 48kHz output (v4), fast RTF (~0.028 on 4060Ti)
+    - MIT License (compatible with GPL-3.0)
+    
+    Fish Speech / OpenAudio Features:
+    - #1 ranking on TTS-Arena2 benchmark
+    - Zero-shot TTS: 10-30s sample
+    - Emotion control: (angry), (excited), (sad), etc.
+    - Multilingual: EN, JA, KO, ZH, FR, DE, AR, ES
+    - S1-mini: 0.5B params, open source on HuggingFace
+    - Apache 2.0 License
     """
     
-    SUPPORTED_BACKENDS = ["coqui", "elevenlabs", "bark", "rvc"]
+    SUPPORTED_BACKENDS = ["coqui", "elevenlabs", "bark", "rvc", "gpt_sovits", "fish_speech"]
     
     def __init__(
         self,
@@ -355,15 +372,23 @@ class VoiceSynthesizer:
         api_key: Optional[str] = None,
         device: str = "cpu",
         model_path: Optional[str] = None,
+        gpt_sovits_url: Optional[str] = None,
+        gpt_model_path: Optional[str] = None,
+        sovits_model_path: Optional[str] = None,
+        fish_speech_url: Optional[str] = None,
     ):
         """
         Inicjalizuje syntezator głosu.
         
         Args:
-            backend: "coqui", "elevenlabs", "bark", "rvc"
-            api_key: klucz API (dla elevenlabs)
+            backend: "coqui", "elevenlabs", "bark", "rvc", "gpt_sovits", "fish_speech"
+            api_key: klucz API (dla elevenlabs, fish_speech cloud)
             device: cpu/cuda/mps
             model_path: ścieżka do modelu (dla RVC)
+            gpt_sovits_url: URL do GPT-SoVITS API (np. http://localhost:9880)
+            gpt_model_path: ścieżka do GPT modelu (.ckpt) dla GPT-SoVITS
+            sovits_model_path: ścieżka do SoVITS modelu (.pth) dla GPT-SoVITS
+            fish_speech_url: URL do Fish Speech API (np. http://localhost:8080)
         """
         if backend not in self.SUPPORTED_BACKENDS:
             raise ValueError(f"Unknown backend: {backend}. Supported: {self.SUPPORTED_BACKENDS}")
@@ -372,6 +397,14 @@ class VoiceSynthesizer:
         self.api_key = api_key
         self.device = device
         self.model_path = model_path
+        
+        # GPT-SoVITS specific
+        self.gpt_sovits_url = gpt_sovits_url or "http://localhost:9880"
+        self.gpt_model_path = gpt_model_path
+        self.sovits_model_path = sovits_model_path
+        
+        # Fish Speech specific
+        self.fish_speech_url = fish_speech_url or "http://localhost:8080"
         
         # Registered voices
         self.voices: Dict[str, RegisteredVoice] = {}
@@ -393,6 +426,10 @@ class VoiceSynthesizer:
             self._init_bark()
         elif self.backend == "rvc":
             self._init_rvc()
+        elif self.backend == "gpt_sovits":
+            self._init_gpt_sovits()
+        elif self.backend == "fish_speech":
+            self._init_fish_speech()
         
         self._initialized = True
     
@@ -466,6 +503,167 @@ class VoiceSynthesizer:
         except Exception as e:
             raise RuntimeError(f"Failed to load RVC model: {e}")
     
+    def _init_gpt_sovits(self):
+        """
+        Initialize GPT-SoVITS backend.
+        
+        GPT-SoVITS can run in two modes:
+        1. API mode: Connect to running GPT-SoVITS server (api_v2.py)
+        2. Local mode: Load models directly (requires GPT-SoVITS installation)
+        
+        For API mode, start the server first:
+            cd GPT-SoVITS
+            python api_v2.py -a 0.0.0.0 -p 9880
+        """
+        import requests
+        
+        print(f"🎤 Initializing GPT-SoVITS...")
+        print(f"   API URL: {self.gpt_sovits_url}")
+        
+        # Check if API is available
+        try:
+            response = requests.get(f"{self.gpt_sovits_url}/", timeout=5)
+            api_available = response.status_code == 200
+        except Exception:
+            api_available = False
+        
+        if api_available:
+            # API mode - use running server
+            self._model = {
+                "mode": "api",
+                "url": self.gpt_sovits_url,
+                "sample_rate": 32000,  # GPT-SoVITS v2/v3 default
+            }
+            print("   ✓ GPT-SoVITS API connected")
+            
+            # Try to get model info
+            try:
+                info_resp = requests.get(f"{self.gpt_sovits_url}/info")
+                if info_resp.status_code == 200:
+                    info = info_resp.json()
+                    print(f"   Model: {info.get('version', 'unknown')}")
+            except Exception:
+                pass
+        else:
+            # Local mode - try to load models directly
+            print("   ⚠️ API not available, attempting local mode...")
+            
+            try:
+                # GPT-SoVITS local inference
+                # This requires GPT-SoVITS to be installed
+                import sys
+                gpt_sovits_path = os.environ.get("GPT_SOVITS_PATH", "./GPT-SoVITS")
+                if os.path.exists(gpt_sovits_path):
+                    sys.path.insert(0, gpt_sovits_path)
+                
+                # Import GPT-SoVITS inference modules
+                from GPT_SoVITS.inference_webui import get_tts_wav
+                
+                self._model = {
+                    "mode": "local",
+                    "inference_fn": get_tts_wav,
+                    "gpt_path": self.gpt_model_path,
+                    "sovits_path": self.sovits_model_path,
+                    "sample_rate": 32000,
+                }
+                print("   ✓ GPT-SoVITS local mode initialized")
+                
+            except ImportError as e:
+                raise ImportError(
+                    f"GPT-SoVITS not available. Options:\n"
+                    f"1. Start GPT-SoVITS API server:\n"
+                    f"   cd GPT-SoVITS && python api_v2.py -a 0.0.0.0 -p 9880\n\n"
+                    f"2. Install GPT-SoVITS locally:\n"
+                    f"   git clone https://github.com/RVC-Boss/GPT-SoVITS.git\n"
+                    f"   cd GPT-SoVITS && pip install -r requirements.txt\n"
+                    f"   Set GPT_SOVITS_PATH environment variable\n\n"
+                    f"Error: {e}"
+                )
+    
+    def _init_fish_speech(self):
+        """
+        Initialize Fish Speech / OpenAudio backend.
+        
+        Fish Speech is the #1 ranked TTS on TTS-Arena2 benchmark.
+        
+        Features:
+        - Zero-shot voice cloning (10-30s sample)
+        - Emotion markers: (angry), (excited), (sad), etc.
+        - Multilingual: EN, JA, KO, ZH, FR, DE, AR, ES
+        - S1-mini: 0.5B params, available on HuggingFace
+        
+        Two modes:
+        1. API mode: Connect to Fish Audio cloud or local server
+        2. Local mode: Run fish-speech locally
+        
+        For local server:
+            pip install fish-speech
+            python -m fish_speech.webui.api --listen 0.0.0.0:8080
+        """
+        import requests
+        
+        print(f"🐟 Initializing Fish Speech...")
+        print(f"   API URL: {self.fish_speech_url}")
+        
+        # Check if using Fish Audio cloud API
+        is_cloud = "fish.audio" in self.fish_speech_url or self.api_key
+        
+        if is_cloud and self.api_key:
+            # Fish Audio cloud API
+            self._model = {
+                "mode": "cloud",
+                "url": "https://api.fish.audio",
+                "api_key": self.api_key,
+                "sample_rate": 44100,
+            }
+            print("   ✓ Fish Audio cloud API configured")
+            return
+        
+        # Check if local API is available
+        try:
+            response = requests.get(f"{self.fish_speech_url}/", timeout=5)
+            api_available = response.status_code in [200, 404]  # 404 is ok, means server running
+        except Exception:
+            api_available = False
+        
+        if api_available:
+            # Local API mode
+            self._model = {
+                "mode": "api",
+                "url": self.fish_speech_url,
+                "sample_rate": 44100,
+            }
+            print("   ✓ Fish Speech local API connected")
+        else:
+            # Try to load locally
+            print("   ⚠️ API not available, attempting local mode...")
+            
+            try:
+                # Check if fish_speech package is installed
+                import fish_speech
+                from fish_speech.inference import inference
+                
+                self._model = {
+                    "mode": "local",
+                    "inference": inference,
+                    "sample_rate": 44100,
+                }
+                print("   ✓ Fish Speech local mode initialized")
+                
+            except ImportError as e:
+                raise ImportError(
+                    f"Fish Speech not available. Options:\n\n"
+                    f"1. Use Fish Audio cloud API (best quality):\n"
+                    f"   Get API key from https://fish.audio\n"
+                    f"   VoiceSynthesizer(backend='fish_speech', api_key='your_key')\n\n"
+                    f"2. Run Fish Speech locally:\n"
+                    f"   pip install fish-speech\n"
+                    f"   python -m fish_speech.webui.api --listen 0.0.0.0:8080\n\n"
+                    f"3. Use HuggingFace Spaces (free demo):\n"
+                    f"   https://huggingface.co/spaces/fishaudio/fish-speech-1\n\n"
+                    f"Error: {e}"
+                )
+    
     def register_voice(
         self,
         name: str,
@@ -522,6 +720,16 @@ class VoiceSynthesizer:
         elif self.backend == "rvc":
             # RVC needs feature extraction
             voice.embedding = self._extract_rvc_features(reference_audio)
+        
+        elif self.backend == "gpt_sovits":
+            # GPT-SoVITS uses reference audio directly (zero-shot)
+            # No embedding extraction needed - just store the path
+            pass
+        
+        elif self.backend == "fish_speech":
+            # Fish Speech uses reference audio directly (zero-shot)
+            # No embedding extraction needed - just store the path
+            pass
         
         self.voices[name] = voice
         print(f"   ✓ Voice '{name}' registered (source: {source_type})")
@@ -710,6 +918,10 @@ class VoiceSynthesizer:
             audio = self._synthesize_bark(text, voice)
         elif self.backend == "rvc":
             audio = self._synthesize_rvc(text, voice, pitch_shift)
+        elif self.backend == "gpt_sovits":
+            audio = self._synthesize_gpt_sovits(text, voice, language, speed)
+        elif self.backend == "fish_speech":
+            audio = self._synthesize_fish_speech(text, voice, language, speed)
         
         # Apply pitch shift if needed
         if pitch_shift != 0 and self.backend != "rvc":
@@ -800,6 +1012,437 @@ class VoiceSynthesizer:
         # RVC wymaga source audio - najpierw generujemy TTS, potem konwertujemy
         # Placeholder implementation
         raise NotImplementedError("RVC synthesis requires additional setup")
+    
+    def _synthesize_gpt_sovits(
+        self,
+        text: str,
+        voice: str,
+        language: str,
+        speed: float
+    ) -> torch.Tensor:
+        """
+        Synthesize with GPT-SoVITS.
+        
+        GPT-SoVITS supports two modes:
+        1. Zero-shot: Just provide 5s reference audio
+        2. Few-shot: Fine-tuned model for specific voice
+        
+        Language codes:
+        - 'zh': Chinese
+        - 'en': English  
+        - 'ja': Japanese
+        - 'ko': Korean
+        - 'yue': Cantonese
+        - 'all_zh'/'all_ja'/etc: Force all text as one language
+        """
+        import requests
+        import io
+        
+        # Get reference audio
+        reference_audio = None
+        if voice != "default" and voice in self.voices:
+            reference_audio = self.voices[voice].reference_audio_path
+        
+        if not reference_audio:
+            raise ValueError(
+                "GPT-SoVITS requires reference audio. "
+                "Register a voice first with synth.register_voice(name, audio_path)"
+            )
+        
+        # Map language code
+        lang_map = {
+            'en': 'en', 'english': 'en',
+            'zh': 'zh', 'chinese': 'zh',
+            'ja': 'ja', 'japanese': 'ja',
+            'ko': 'ko', 'korean': 'ko',
+            'yue': 'yue', 'cantonese': 'yue',
+            # For non-supported languages, try English
+            'pl': 'en', 'de': 'en', 'fr': 'en', 'es': 'en', 'ru': 'en',
+        }
+        gpt_sovits_lang = lang_map.get(language.lower(), 'en')
+        
+        print(f"   GPT-SoVITS language: {gpt_sovits_lang}")
+        print(f"   Reference audio: {Path(reference_audio).name}")
+        
+        if self._model["mode"] == "api":
+            return self._synthesize_gpt_sovits_api(
+                text, reference_audio, gpt_sovits_lang, speed
+            )
+        else:
+            return self._synthesize_gpt_sovits_local(
+                text, reference_audio, gpt_sovits_lang, speed
+            )
+    
+    def _synthesize_gpt_sovits_api(
+        self,
+        text: str,
+        reference_audio: str,
+        language: str,
+        speed: float
+    ) -> torch.Tensor:
+        """Synthesize using GPT-SoVITS HTTP API."""
+        import requests
+        import io
+        
+        # Load reference audio text (prompt text)
+        # GPT-SoVITS needs to know what's said in the reference audio
+        # If not available, we'll try without it
+        prompt_text = ""
+        
+        # Check if we have metadata with transcript
+        voice_name = None
+        for name, voice in self.voices.items():
+            if voice.reference_audio_path == reference_audio:
+                voice_name = name
+                if voice.metadata and 'transcript' in voice.metadata:
+                    prompt_text = voice.metadata['transcript']
+                break
+        
+        # Read reference audio file
+        with open(reference_audio, 'rb') as f:
+            ref_audio_bytes = f.read()
+        
+        # API v2 endpoint (recommended)
+        url = f"{self.gpt_sovits_url}/tts"
+        
+        # Prepare multipart form data
+        files = {
+            'ref_audio': (Path(reference_audio).name, ref_audio_bytes, 'audio/wav'),
+        }
+        
+        data = {
+            'text': text,
+            'text_lang': language,
+            'ref_audio_text': prompt_text,
+            'prompt_lang': language,
+            'speed_factor': speed,
+            'media_type': 'wav',
+            'streaming_mode': False,
+        }
+        
+        print(f"   Calling GPT-SoVITS API: {url}")
+        
+        try:
+            response = requests.post(url, files=files, data=data, timeout=120)
+            response.raise_for_status()
+        except requests.exceptions.Timeout:
+            raise RuntimeError("GPT-SoVITS API timeout - text may be too long")
+        except requests.exceptions.RequestException as e:
+            # Try alternative API format
+            print(f"   Primary API failed, trying alternative...")
+            return self._synthesize_gpt_sovits_api_v1(
+                text, reference_audio, language, speed, prompt_text
+            )
+        
+        # Parse response
+        content_type = response.headers.get('Content-Type', '')
+        
+        if 'audio' in content_type or len(response.content) > 1000:
+            # Direct audio response
+            audio, sr = torchaudio.load(io.BytesIO(response.content))
+            if sr != self._model["sample_rate"]:
+                audio = torchaudio.functional.resample(
+                    audio, sr, self._model["sample_rate"]
+                )
+            return audio.squeeze()
+        else:
+            # JSON response with error or URL
+            try:
+                result = response.json()
+                if 'error' in result:
+                    raise RuntimeError(f"GPT-SoVITS error: {result['error']}")
+                elif 'audio_url' in result:
+                    # Download audio from URL
+                    audio_response = requests.get(result['audio_url'])
+                    audio, sr = torchaudio.load(io.BytesIO(audio_response.content))
+                    return audio.squeeze()
+            except Exception as e:
+                raise RuntimeError(f"Failed to parse GPT-SoVITS response: {e}")
+    
+    def _synthesize_gpt_sovits_api_v1(
+        self,
+        text: str,
+        reference_audio: str,
+        language: str,
+        speed: float,
+        prompt_text: str
+    ) -> torch.Tensor:
+        """Alternative API format for older GPT-SoVITS versions."""
+        import requests
+        import io
+        import base64
+        
+        # Read and encode reference audio
+        with open(reference_audio, 'rb') as f:
+            ref_audio_b64 = base64.b64encode(f.read()).decode('utf-8')
+        
+        # API v1 format (JSON body)
+        url = f"{self.gpt_sovits_url}/"
+        
+        payload = {
+            "text": text,
+            "text_language": language,
+            "refer_wav_path": reference_audio,  # Some versions accept path
+            "prompt_text": prompt_text,
+            "prompt_language": language,
+            "speed": speed,
+        }
+        
+        try:
+            response = requests.post(
+                url, 
+                json=payload, 
+                timeout=120,
+                headers={'Content-Type': 'application/json'}
+            )
+            response.raise_for_status()
+            
+            audio, sr = torchaudio.load(io.BytesIO(response.content))
+            return audio.squeeze()
+            
+        except Exception as e:
+            raise RuntimeError(
+                f"GPT-SoVITS API failed. Make sure the server is running:\n"
+                f"  cd GPT-SoVITS && python api_v2.py -a 0.0.0.0 -p 9880\n"
+                f"Error: {e}"
+            )
+    
+    def _synthesize_gpt_sovits_local(
+        self,
+        text: str,
+        reference_audio: str,
+        language: str,
+        speed: float
+    ) -> torch.Tensor:
+        """Synthesize using local GPT-SoVITS installation."""
+        # Local inference function loaded in _init_gpt_sovits
+        inference_fn = self._model["inference_fn"]
+        
+        # Get prompt text from voice metadata if available
+        prompt_text = ""
+        for voice in self.voices.values():
+            if voice.reference_audio_path == reference_audio:
+                if voice.metadata and 'transcript' in voice.metadata:
+                    prompt_text = voice.metadata['transcript']
+                break
+        
+        # Call GPT-SoVITS inference
+        # Returns tuple: (sample_rate, audio_numpy)
+        sr, audio_np = inference_fn(
+            ref_wav_path=reference_audio,
+            prompt_text=prompt_text,
+            prompt_language=language,
+            text=text,
+            text_language=language,
+            speed=speed,
+        )
+        
+        # Convert to tensor
+        audio = torch.from_numpy(audio_np).float()
+        
+        # Ensure proper shape
+        if audio.dim() == 1:
+            pass  # Already [samples]
+        elif audio.dim() == 2:
+            audio = audio.squeeze(0)
+        
+        # Resample if needed
+        target_sr = self._model["sample_rate"]
+        if sr != target_sr:
+            audio = torchaudio.functional.resample(audio, sr, target_sr)
+        
+        return audio
+    
+    def _synthesize_fish_speech(
+        self,
+        text: str,
+        voice: str,
+        language: str,
+        speed: float
+    ) -> torch.Tensor:
+        """
+        Synthesize with Fish Speech / OpenAudio.
+        
+        Fish Speech supports emotion markers in text:
+        - Emotions: (angry), (sad), (excited), (surprised), etc.
+        - Tones: (whispering), (shouting), (soft tone)
+        - Effects: (laughing), (sighing), (crying)
+        
+        Example:
+            text = "(excited) I can't believe we won! (laughing)"
+        """
+        import requests
+        import io
+        
+        # Get reference audio
+        reference_audio = None
+        if voice != "default" and voice in self.voices:
+            reference_audio = self.voices[voice].reference_audio_path
+        
+        if not reference_audio:
+            raise ValueError(
+                "Fish Speech requires reference audio. "
+                "Register a voice first with synth.register_voice(name, audio_path)"
+            )
+        
+        print(f"   🐟 Fish Speech synthesis")
+        print(f"   Reference: {Path(reference_audio).name}")
+        
+        mode = self._model["mode"]
+        
+        if mode == "cloud":
+            return self._synthesize_fish_speech_cloud(text, reference_audio, language, speed)
+        elif mode == "api":
+            return self._synthesize_fish_speech_api(text, reference_audio, language, speed)
+        else:
+            return self._synthesize_fish_speech_local(text, reference_audio, language, speed)
+    
+    def _synthesize_fish_speech_cloud(
+        self,
+        text: str,
+        reference_audio: str,
+        language: str,
+        speed: float
+    ) -> torch.Tensor:
+        """Synthesize using Fish Audio cloud API."""
+        import requests
+        import io
+        
+        # Fish Audio API endpoint
+        url = "https://api.fish.audio/v1/tts"
+        
+        # Read reference audio
+        with open(reference_audio, 'rb') as f:
+            ref_audio_bytes = f.read()
+        
+        # Prepare multipart request
+        files = {
+            'reference_audio': (Path(reference_audio).name, ref_audio_bytes, 'audio/wav'),
+        }
+        
+        data = {
+            'text': text,
+            'language': language,
+            'speed': speed,
+        }
+        
+        headers = {
+            'Authorization': f"Bearer {self._model['api_key']}",
+        }
+        
+        print(f"   Calling Fish Audio cloud API...")
+        
+        response = requests.post(url, files=files, data=data, headers=headers, timeout=120)
+        response.raise_for_status()
+        
+        # Parse audio response
+        audio, sr = torchaudio.load(io.BytesIO(response.content))
+        
+        target_sr = self._model["sample_rate"]
+        if sr != target_sr:
+            audio = torchaudio.functional.resample(audio, sr, target_sr)
+        
+        return audio.squeeze()
+    
+    def _synthesize_fish_speech_api(
+        self,
+        text: str,
+        reference_audio: str,
+        language: str,
+        speed: float
+    ) -> torch.Tensor:
+        """Synthesize using local Fish Speech API server."""
+        import requests
+        import io
+        
+        url = f"{self.fish_speech_url}/v1/tts"
+        
+        # Read reference audio
+        with open(reference_audio, 'rb') as f:
+            ref_audio_bytes = f.read()
+        
+        # Try different API formats
+        # Format 1: Multipart form
+        files = {
+            'reference_audio': (Path(reference_audio).name, ref_audio_bytes, 'audio/wav'),
+        }
+        
+        data = {
+            'text': text,
+            'chunk_length': 200,
+            'format': 'wav',
+            'streaming': False,
+        }
+        
+        try:
+            response = requests.post(url, files=files, data=data, timeout=120)
+            response.raise_for_status()
+            
+            audio, sr = torchaudio.load(io.BytesIO(response.content))
+            target_sr = self._model["sample_rate"]
+            if sr != target_sr:
+                audio = torchaudio.functional.resample(audio, sr, target_sr)
+            return audio.squeeze()
+            
+        except requests.exceptions.RequestException:
+            # Try format 2: JSON body with base64 audio
+            import base64
+            
+            ref_audio_b64 = base64.b64encode(ref_audio_bytes).decode('utf-8')
+            
+            json_data = {
+                "text": text,
+                "reference_audio": ref_audio_b64,
+                "reference_text": "",  # Optional transcript
+                "max_new_tokens": 1024,
+                "chunk_length": 200,
+                "top_p": 0.7,
+                "repetition_penalty": 1.2,
+                "temperature": 0.7,
+            }
+            
+            response = requests.post(
+                f"{self.fish_speech_url}/v1/tts",
+                json=json_data,
+                timeout=120
+            )
+            response.raise_for_status()
+            
+            audio, sr = torchaudio.load(io.BytesIO(response.content))
+            target_sr = self._model["sample_rate"]
+            if sr != target_sr:
+                audio = torchaudio.functional.resample(audio, sr, target_sr)
+            return audio.squeeze()
+    
+    def _synthesize_fish_speech_local(
+        self,
+        text: str,
+        reference_audio: str,
+        language: str,
+        speed: float
+    ) -> torch.Tensor:
+        """Synthesize using local Fish Speech installation."""
+        # Local inference loaded in _init_fish_speech
+        inference_fn = self._model["inference"]
+        
+        # Call fish_speech inference
+        audio_np = inference_fn(
+            text=text,
+            reference_audio=reference_audio,
+            max_new_tokens=1024,
+            chunk_length=200,
+            top_p=0.7,
+            repetition_penalty=1.2,
+            temperature=0.7,
+        )
+        
+        # Convert to tensor
+        audio = torch.from_numpy(audio_np).float()
+        
+        if audio.dim() == 2:
+            audio = audio.squeeze(0)
+        
+        return audio
     
     def _apply_pitch_shift(
         self,
@@ -1032,7 +1675,7 @@ class SingingVoiceSynthesizer(VoiceSynthesizer):
 # ============================================================================
 
 def create_voice_synthesizer(
-    backend: str = "coqui",
+    backend: str = "gpt_sovits",
     **kwargs
 ) -> VoiceSynthesizer:
     """Factory function for VoiceSynthesizer."""
@@ -1040,7 +1683,7 @@ def create_voice_synthesizer(
 
 
 def create_singing_synthesizer(
-    backend: str = "coqui",
+    backend: str = "gpt_sovits",
     **kwargs
 ) -> SingingVoiceSynthesizer:
     """Factory function for SingingVoiceSynthesizer."""
@@ -1057,32 +1700,38 @@ if __name__ == "__main__":
 ║           Voice Synthesis & Cloning Module                   ║
 ╠══════════════════════════════════════════════════════════════╣
 ║                                                              ║
-║  Użycie:                                                     ║
+║  🎤 GPT-SoVITS (RECOMMENDED - MIT License, SOTA quality)    ║
 ║                                                              ║
-║  1. Nagraj próbkę swojego głosu (10-30 sekund)              ║
-║     - Mów wyraźnie                                           ║
-║     - Cisza w tle                                            ║
-║     - Różnorodne słowa/dźwięki                              ║
+║  Zero-shot TTS: 5s voice sample → instant cloning           ║
+║  Few-shot TTS: 1min training → perfect voice match          ║
+║  Languages: EN, JA, KO, ZH, Cantonese                        ║
+║  Output: 48kHz (v4), fast RTF ~0.028                         ║
 ║                                                              ║
-║  2. Zarejestruj głos:                                        ║
-║     synth = VoiceSynthesizer(backend="coqui")               ║
-║     synth.register_voice("moj_glos", "moje_nagranie.wav")   ║
+║  Setup:                                                      ║
+║    1. Clone: git clone https://github.com/RVC-Boss/GPT-SoVITS║
+║    2. Install: cd GPT-SoVITS && pip install -r requirements  ║
+║    3. Start API: python api_v2.py -a 0.0.0.0 -p 9880        ║
 ║                                                              ║
-║  3. Generuj:                                                 ║
-║     audio = synth.synthesize(                                ║
-║         text="Cześć, to jest mój sklonowany głos!",         ║
-║         voice="moj_glos",                                    ║
-║         language="pl"                                        ║
-║     )                                                        ║
+║  Usage:                                                      ║
+║    synth = VoiceSynthesizer(backend="gpt_sovits")           ║
+║    synth.register_voice("singer", "voice_5s.wav")           ║
+║    audio = synth.synthesize(                                 ║
+║        text="I walk alone through empty streets",            ║
+║        voice="singer",                                       ║
+║        language="en"                                         ║
+║    )                                                        ║
 ║                                                              ║
-║  Backendy:                                                   ║
-║  - coqui: XTTS v2 (lokalne, dobre jakościowo)              ║
-║  - elevenlabs: API (najlepsza jakość, płatne)              ║
-║  - bark: Meta (lokalne, eksperymentalne)                    ║
+║  ──────────────────────────────────────────────────          ║
 ║                                                              ║
-║  Instalacja:                                                 ║
-║    pip install TTS              # dla Coqui                 ║
-║    pip install elevenlabs       # dla ElevenLabs            ║
+║  Other Backends:                                             ║
+║  - coqui: XTTS v2 (local, open source)                      ║
+║  - elevenlabs: API (best quality, paid)                     ║
+║  - bark: Meta (local, experimental)                         ║
+║  - rvc: RVC voice conversion                                ║
+║                                                              ║
+║  Installation (other backends):                              ║
+║    pip install TTS              # Coqui XTTS                ║
+║    pip install elevenlabs       # ElevenLabs                ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
