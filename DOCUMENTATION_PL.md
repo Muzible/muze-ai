@@ -1251,27 +1251,274 @@ python inference_v2.py \
     --output ./output/structured_song.wav
 ```
 
-### Wszystkie opcje
+---
+
+## 🎤 Singing Voice Synthesis (SVS) - Synteza Śpiewu
+
+### Tryby wokalne
+
+System obsługuje **dwa główne tryby** generowania wokalu:
+
+| Tryb | Backend | Opis | Jakość |
+|------|---------|------|--------|
+| **TTS (mówiony)** | Coqui XTTS, Bark | Tekst zamieniany na mowę | ⭐⭐⭐ |
+| **SVS (śpiewany)** | GPT-SoVITS, Fish Speech | Prawdziwy śpiew z lyrics | ⭐⭐⭐⭐⭐ |
+| **Voice Conversion** | RVC | Konwersja głosu na inny | ⭐⭐⭐⭐ |
+
+### Dostępne backendy
+
+| Backend | Typ | Licencja | Wymagania | Uwagi |
+|---------|-----|----------|-----------|-------|
+| **GPT-SoVITS** | SVS | MIT | 5s sample, API server | Zero-shot singing |
+| **Fish Speech** | SVS | Apache 2.0 | 10-30s sample | #1 TTS-Arena2 |
+| **Coqui XTTS v2** | TTS | Apache 2.0 | Lokalne | Mówiony (nie śpiew) |
+| **ElevenLabs** | TTS | Płatne API | API key | Najwyższa jakość |
+| **Bark** | TTS | MIT | Lokalne | Open source |
+| **RVC** | SVC | MIT | .pth model | Voice conversion |
+
+### Generowanie z śpiewem (GPT-SoVITS)
+
+```bash
+# Wymaga uruchomionego serwera GPT-SoVITS:
+# cd GPT-SoVITS && python api_v2.py -a 0.0.0.0 -p 9880
+
+python inference_v2.py \
+    --prompt "indie rock ballad with acoustic guitar" \
+    --lyrics "Walking through the empty streets at night" \
+    --sing_lyrics \
+    --singing_backend gpt_sovits \
+    --singing_voice_ref ./voice_sample_5sec.wav \
+    --gpt_sovits_url http://localhost:9880 \
+    --duration 30 \
+    --output ./output/sung_track.wav
+```
+
+### Generowanie z Fish Speech (#1 jakość)
+
+```bash
+# Fish Speech z emotion markers
+python inference_v2.py \
+    --prompt "electronic pop anthem" \
+    --lyrics "(excited) I feel alive tonight! (sad) But you're not here..." \
+    --sing_lyrics \
+    --singing_backend fish_speech \
+    --singing_voice_ref ./singer_sample_20sec.wav \
+    --fish_speech_url http://localhost:8080 \
+    --duration 30 \
+    --output ./output/fish_sung.wav
+```
+
+### Generowanie z TTS (mówiony wokal)
+
+```bash
+# Coqui XTTS - działa lokalnie, bez serwera
+python inference_v2.py \
+    --prompt "ambient cinematic" \
+    --lyrics "In a world beyond dreams..." \
+    --sing_lyrics \
+    --singing_backend coqui \
+    --singing_voice_ref ./narrator_voice.wav \
+    --duration 30 \
+    --output ./output/spoken_intro.wav
+```
+
+---
+
+## 🎹 Pitch Matching - Dopasowanie Tonacji
+
+System automatycznie **dopasowuje wysokość wokalu do klucza instrumentalu**:
+
+### Jak działa:
+
+1. **Detekcja klucza** z instrumentalu (chroma + Krumhansl-Schmuckler)
+2. **Ekstrakcja F0** z wokalu (pYIN/CREPE)
+3. **Obliczenie przesunięcia** do najbliższej oktawy klucza
+4. **Pitch shift** wokalu (librosa, max ±6 półtonów)
+
+### Przykład output:
+
+```
+🎚️ Mixing vocals with instrumental...
+   Vocals level: 70%
+   🎼 Detected key: E minor (confidence: 72%)
+
+🎹 Pitch matching vocals to E minor...
+   Vocals mean F0: 234.5 Hz
+   Target root: 329.6 Hz
+   Shifting vocals by +2.3 semitones
+   ✅ Pitch-shifted vocals to match E minor
+```
+
+### Opcje CLI:
+
+```bash
+# Z pitch matching (domyślnie włączone)
+python inference_v2.py \
+    --prompt "rock ballad" \
+    --lyrics "..." \
+    --sing_lyrics \
+    --pitch_match \
+    --output ./output/pitched.wav
+
+# Bez pitch matching (wokal może być off-key)
+python inference_v2.py \
+    --prompt "rock ballad" \
+    --lyrics "..." \
+    --sing_lyrics \
+    --no_pitch_match \
+    --output ./output/raw_vocals.wav
+```
+
+---
+
+## 🌍 Automatyczna Detekcja Języka i Fonemy
+
+System automatycznie wykrywa język lyrics i konwertuje na fonemy IPA:
+
+### Wspierane języki:
+
+| Język | Kod | Backend fonemów |
+|-------|-----|-----------------|
+| English | `en` | Gruut |
+| Polski | `pl` | eSpeak-NG |
+| Deutsch | `de` | Gruut |
+| Français | `fr` | Gruut |
+| Español | `es` | Gruut |
+| Italiano | `it` | Gruut |
+| Русский | `ru` | Gruut |
+| 日本語 | `ja` | eSpeak-NG |
+| 한국어 | `ko` | eSpeak-NG |
+| 中文 | `zh` | eSpeak-NG |
+
+### Przykład:
+
+```bash
+# Auto-detekcja (domyślnie)
+python inference_v2.py \
+    --prompt "polska ballada rockowa" \
+    --lyrics "Idę przez pustą ulicę w nocy" \
+    --sing_lyrics \
+    --output ./output/polish_song.wav
+
+# Wymuszona detekcja języka
+python inference_v2.py \
+    --prompt "german schlager" \
+    --lyrics "Ich liebe dich" \
+    --language de \
+    --sing_lyrics \
+    --output ./output/german_song.wav
+```
+
+### Output:
+
+```
+📝 Processing lyrics (30 chars)...
+   Text: Idę przez pustą ulicę w nocy
+   🌍 Auto-detected language: pl
+   ✅ Converted to 28 phonemes (backend: espeak, lang: pl)
+   IPA: ˈidɛ̃ pʃɛs ˈpustɔ̃ uˈlʲitsɛ v ˈnɔtsɨ
+```
+
+---
+
+## 🎛️ Wszystkie opcje CLI
 
 ```bash
 python inference_v2.py --help
 
-# Główne opcje:
-#   --prompt TEXT          Prompt opisujący muzykę
-#   --output PATH          Ścieżka wyjściowa (def: ./output/generated.wav)
-#   --duration FLOAT       Długość w sekundach (def: 30)
-#   --cfg_scale FLOAT      Classifier-free guidance (def: 7.5)
-#   --num_steps INT        Kroki denoising (def: 50)
-#   --template NAME        Szablon struktury (verse_chorus, etc.)
-#
-# Voice conditioning:
-#   --style_of NAME/PATH   Voice embedding artysty lub plik .wav
-#
-# Voice cloning:
-#   --voice_clone NAME     Artysta do sklonowania głosu
-#   --voice_clone_samples PATH  Folder/plik z samplami głosu
-#   --lyrics TEXT          Tekst do zaśpiewania
-#   --language CODE        Kod języka (pl, en, de, etc.)
+# === Główne parametry ===
+--prompt TEXT              Opis muzyki (wymagane)
+--duration FLOAT           Długość w sekundach (def: 120)
+--output PATH              Ścieżka wyjściowa (def: ./output/generated_v2.wav)
+--seed INT                 Seed dla powtarzalności
+
+# === Voice Conditioning ===
+--style_of NAME            Voice embedding artysty (256-dim, wpływa na vibe)
+--voice_clone NAME         Voice cloning (sklonuj głos artysty)
+--voice_as NAME            ECAPA embedding (192-dim, najlepsza jakość)
+--voice_clone_samples PATH Własne sample głosu (.wav)
+
+# === Lyrics & Phonemes ===
+--lyrics TEXT              Tekst do zaśpiewania
+--lyrics_file PATH         Plik z lyrics
+--language CODE            Kod języka (auto-detect jeśli brak)
+
+# === Singing Voice Synthesis ===
+--sing_lyrics              Włącz syntezę śpiewu (bez tego tylko LDM)
+--singing_backend NAME     Backend: gpt_sovits, fish_speech, coqui, elevenlabs
+--singing_voice_ref PATH   Reference audio dla głosu (5-30s WAV)
+--gpt_sovits_url URL       GPT-SoVITS API (def: http://localhost:9880)
+--fish_speech_url URL      Fish Speech API (def: http://localhost:8080)
+--fish_speech_api_key KEY  Klucz API Fish Audio cloud
+
+# === Mixing & Pitch ===
+--mix_vocals FLOAT         Poziom miksu wokalu (0.0-1.0, def: 0.7)
+--pitch_match              Dopasuj pitch wokalu do klucza (domyślnie: TAK)
+--no_pitch_match           Wyłącz pitch matching
+--strip_ldm_vocals         Usuń przypadkowe wokale z LDM (Demucs)
+--no_strip_ldm_vocals      Nie usuwaj wokali z LDM
+
+# === Model paths ===
+--vae_checkpoint PATH      Checkpoint VAE
+--planner_checkpoint PATH  Checkpoint Composition Planner
+--ldm_checkpoint PATH      Checkpoint LDM
+
+# === Generation ===
+--template NAME            Szablon struktury: verse_chorus, edm, ballad, progressive
+--cfg_scale FLOAT          Classifier-free guidance (def: 7.5)
+--device NAME              cpu, cuda, mps
+```
+
+---
+
+## 🔄 Pełny Pipeline SVS
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Text Prompt   │───▶│  LDM (U-Net)    │───▶│  Instrumental   │
+│                 │    │  + VAE Decode   │    │  (bez wokalu)   │
+└─────────────────┘    └─────────────────┘    └────────┬────────┘
+                                                       │
+┌─────────────────┐    ┌─────────────────┐             │
+│     Lyrics      │───▶│  Phoneme Proc.  │             │
+│                 │    │  (Gruut/eSpeak) │             │
+└─────────────────┘    └─────────────────┘             │
+        │                                              │
+        ▼                                              │
+┌─────────────────┐    ┌─────────────────┐             │
+│  Voice Sample   │───▶│  GPT-SoVITS /   │───▶ Vocals │
+│   (5-30s)       │    │  Fish Speech    │      TTS   │
+└─────────────────┘    └─────────────────┘             │
+                              │                        │
+                              ▼                        │
+                       ┌─────────────────┐             │
+                       │  F0 Extraction  │             │
+                       │  (pYIN/CREPE)   │             │
+                       └────────┬────────┘             │
+                                │                      │
+                                ▼                      ▼
+                       ┌─────────────────┐    ┌─────────────────┐
+                       │  Pitch Shift    │    │  Key Detection  │
+                       │  (librosa)      │◀───│  (chroma)       │
+                       └────────┬────────┘    └─────────────────┘
+                                │
+                                ▼
+                       ┌─────────────────┐
+                       │  Align Vocals   │
+                       │  to Regions     │
+                       └────────┬────────┘
+                                │
+                                ▼
+                       ┌─────────────────┐
+                       │  Mix Final      │
+                       │  (inst + vox)   │
+                       └────────┬────────┘
+                                │
+                                ▼
+                       ┌─────────────────┐
+                       │   Output WAV    │
+                       │   (32kHz)       │
+                       └─────────────────┘
 ```
 
 ---

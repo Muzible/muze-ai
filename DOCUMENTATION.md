@@ -773,27 +773,189 @@ python inference_v2.py \
     --output ./output/structured_song.wav
 ```
 
-### All Options
+---
+
+## 🎤 Singing Voice Synthesis (SVS)
+
+### Vocal Modes
+
+The system supports **two main modes** for vocal generation:
+
+| Mode | Backend | Description | Quality |
+|------|---------|-------------|---------|
+| **TTS (spoken)** | Coqui XTTS, Bark | Text converted to speech | ⭐⭐⭐ |
+| **SVS (sung)** | GPT-SoVITS, Fish Speech | Real singing from lyrics | ⭐⭐⭐⭐⭐ |
+| **Voice Conversion** | RVC | Convert voice to another | ⭐⭐⭐⭐ |
+
+### Available Backends
+
+| Backend | Type | License | Requirements | Notes |
+|---------|------|---------|--------------|-------|
+| **GPT-SoVITS** | SVS | MIT | 5s sample, API server | Zero-shot singing |
+| **Fish Speech** | SVS | Apache 2.0 | 10-30s sample | #1 TTS-Arena2 |
+| **Coqui XTTS v2** | TTS | Apache 2.0 | Local | Spoken (not singing) |
+| **ElevenLabs** | TTS | Paid API | API key | Highest quality |
+| **RVC** | SVC | MIT | .pth model | Voice conversion |
+
+### Generate with Singing (GPT-SoVITS)
+
+```bash
+# Requires running GPT-SoVITS server:
+# cd GPT-SoVITS && python api_v2.py -a 0.0.0.0 -p 9880
+
+python inference_v2.py \
+    --prompt "indie rock ballad with acoustic guitar" \
+    --lyrics "Walking through the empty streets at night" \
+    --sing_lyrics \
+    --singing_backend gpt_sovits \
+    --singing_voice_ref ./voice_sample_5sec.wav \
+    --gpt_sovits_url http://localhost:9880 \
+    --duration 30 \
+    --output ./output/sung_track.wav
+```
+
+### Generate with Fish Speech (#1 Quality)
+
+```bash
+# Fish Speech with emotion markers
+python inference_v2.py \
+    --prompt "electronic pop anthem" \
+    --lyrics "(excited) I feel alive tonight! (sad) But you're not here..." \
+    --sing_lyrics \
+    --singing_backend fish_speech \
+    --singing_voice_ref ./singer_sample_20sec.wav \
+    --duration 30 \
+    --output ./output/fish_sung.wav
+```
+
+### Generate with TTS (Spoken Vocals)
+
+```bash
+# Coqui XTTS - works locally, no server needed
+python inference_v2.py \
+    --prompt "ambient cinematic" \
+    --lyrics "In a world beyond dreams..." \
+    --sing_lyrics \
+    --singing_backend coqui \
+    --singing_voice_ref ./narrator_voice.wav \
+    --duration 30 \
+    --output ./output/spoken_intro.wav
+```
+
+---
+
+## 🎹 Pitch Matching
+
+The system automatically **matches vocal pitch to the instrumental key**:
+
+### How it works:
+
+1. **Key detection** from instrumental (chroma + Krumhansl-Schmuckler)
+2. **F0 extraction** from vocals (pYIN/CREPE)
+3. **Calculate shift** to nearest octave of key root
+4. **Pitch shift** vocals (librosa, max ±6 semitones)
+
+### Example output:
+
+```
+🎚️ Mixing vocals with instrumental...
+   Vocals level: 70%
+   🎼 Detected key: E minor (confidence: 72%)
+
+🎹 Pitch matching vocals to E minor...
+   Vocals mean F0: 234.5 Hz
+   Target root: 329.6 Hz
+   Shifting vocals by +2.3 semitones
+   ✅ Pitch-shifted vocals to match E minor
+```
+
+### CLI Options:
+
+```bash
+# With pitch matching (enabled by default)
+--pitch_match
+
+# Disable pitch matching (vocals may be off-key)
+--no_pitch_match
+```
+
+---
+
+## 🌍 Auto Language Detection & Phonemes
+
+The system automatically detects lyrics language and converts to IPA phonemes:
+
+### Supported Languages:
+
+| Language | Code | Phoneme Backend |
+|----------|------|-----------------|
+| English | `en` | Gruut |
+| Polish | `pl` | eSpeak-NG |
+| German | `de` | Gruut |
+| French | `fr` | Gruut |
+| Spanish | `es` | Gruut |
+| Italian | `it` | Gruut |
+| Russian | `ru` | Gruut |
+| Japanese | `ja` | eSpeak-NG |
+| Korean | `ko` | eSpeak-NG |
+| Chinese | `zh` | eSpeak-NG |
+
+### Example:
+
+```
+📝 Processing lyrics (30 chars)...
+   Text: Idę przez pustą ulicę w nocy
+   🌍 Auto-detected language: pl
+   ✅ Converted to 28 phonemes (backend: espeak, lang: pl)
+   IPA: ˈidɛ̃ pʃɛs ˈpustɔ̃ uˈlʲitsɛ v ˈnɔtsɨ
+```
+
+---
+
+## 🎛️ All CLI Options
 
 ```bash
 python inference_v2.py --help
 
-# Main options:
-#   --prompt TEXT          Prompt describing the music
-#   --output PATH          Output path (default: ./output/generated.wav)
-#   --duration FLOAT       Duration in seconds (default: 30)
-#   --cfg_scale FLOAT      Classifier-free guidance (default: 7.5)
-#   --num_steps INT        Denoising steps (default: 50)
-#   --template NAME        Structure template (verse_chorus, etc.)
-#
-# Voice conditioning:
-#   --style_of NAME/PATH   Artist voice embedding or .wav file
-#
-# Voice cloning:
-#   --voice_clone NAME     Artist to clone voice from
-#   --voice_clone_samples PATH  Folder/file with voice samples
-#   --lyrics TEXT          Text to sing
-#   --language CODE        Language code (pl, en, de, etc.)
+# === Main Parameters ===
+--prompt TEXT              Music description (required)
+--duration FLOAT           Duration in seconds (default: 120)
+--output PATH              Output path (default: ./output/generated_v2.wav)
+--seed INT                 Seed for reproducibility
+
+# === Voice Conditioning ===
+--style_of NAME            Artist voice embedding (256-dim, affects vibe)
+--voice_clone NAME         Voice cloning (clone artist voice)
+--voice_as NAME            ECAPA embedding (192-dim, best quality)
+--voice_clone_samples PATH Custom voice samples (.wav)
+
+# === Lyrics & Phonemes ===
+--lyrics TEXT              Text to sing
+--lyrics_file PATH         Lyrics file
+--language CODE            Language code (auto-detect if omitted)
+
+# === Singing Voice Synthesis ===
+--sing_lyrics              Enable vocal synthesis (without this, LDM only)
+--singing_backend NAME     Backend: gpt_sovits, fish_speech, coqui, elevenlabs
+--singing_voice_ref PATH   Reference audio for voice (5-30s WAV)
+--gpt_sovits_url URL       GPT-SoVITS API (default: http://localhost:9880)
+--fish_speech_url URL      Fish Speech API (default: http://localhost:8080)
+
+# === Mixing & Pitch ===
+--mix_vocals FLOAT         Vocal mix level (0.0-1.0, default: 0.7)
+--pitch_match              Match vocal pitch to key (default: YES)
+--no_pitch_match           Disable pitch matching
+--strip_ldm_vocals         Remove accidental LDM vocals (Demucs)
+
+# === Model Paths ===
+--vae_checkpoint PATH      VAE checkpoint
+--planner_checkpoint PATH  Composition Planner checkpoint
+--ldm_checkpoint PATH      LDM checkpoint
+
+# === Generation ===
+--template NAME            Structure template: verse_chorus, edm, ballad, progressive
+--cfg_scale FLOAT          Classifier-free guidance (default: 7.5)
+--device NAME              cpu, cuda, mps
 ```
 
 ---

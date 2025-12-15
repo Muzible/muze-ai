@@ -17,6 +17,8 @@ checkpoints_v2/
 *.pth
 *.ckpt
 *.safetensors
+output/
+pretrained_models/
 
 # Data files (too large for git)
 *.csv

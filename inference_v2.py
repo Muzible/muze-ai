@@ -658,12 +658,17 @@ def load_models(args, device):
     print("📦 Loading VAE...")
     vae_ckpt = torch.load(args.vae_checkpoint, map_location=device)
     
-    # Wykryj latent_dim z checkpointu
+    # Wykryj konfigurację VAE z checkpointu
     latent_dim = 128  # default
     latent_scale = 1.0  # default (brak skalowania)
+    vae_sample_rate = 32000  # VAE default
+    vae_hop_length = 320  # VAE default (32000 / 320 = 100 fps)
+    
     if 'config' in vae_ckpt:
         latent_dim = vae_ckpt['config'].get('latent_dim', 128)
         latent_scale = vae_ckpt['config'].get('latent_scale', 1.0)
+        vae_sample_rate = vae_ckpt['config'].get('sample_rate', 32000)
+        vae_hop_length = vae_ckpt['config'].get('hop_length', 320)
     elif 'latent_dim' in vae_ckpt:
         latent_dim = vae_ckpt['latent_dim']
     else:
@@ -676,9 +681,10 @@ def load_models(args, device):
                 break
     
     print(f"   Detected latent_dim: {latent_dim}")
+    print(f"   VAE sample_rate: {vae_sample_rate}, hop_length: {vae_hop_length}")
     print(f"   Using latent_scale: {latent_scale:.4f}")
     
-    vae = AudioVAE(latent_dim=latent_dim).to(device)
+    vae = AudioVAE(latent_dim=latent_dim, sample_rate=vae_sample_rate, hop_length=vae_hop_length).to(device)
     vae.load_state_dict(vae_ckpt.get('model_state_dict', vae_ckpt))
     vae.eval()
     if use_fp16:
@@ -686,6 +692,8 @@ def load_models(args, device):
     models['vae'] = vae
     models['latent_dim'] = latent_dim
     models['latent_scale'] = latent_scale  # ✅ Save for use during decode
+    models['vae_sample_rate'] = vae_sample_rate  # ✅ VAE internal sample rate
+    models['vae_hop_length'] = vae_hop_length  # ✅ VAE hop length
     models['dtype'] = dtype
     
     # Composition Planner
@@ -870,9 +878,12 @@ def generate_section_audio(
     if dtype == torch.float16:
         text_embed = text_embed.half()
     
-    # Sample latent
+    # Sample latent - używaj VAE sample_rate do obliczenia latent_time
     segment_duration = min(section.duration, 10.0)  # Max 10s per segment
-    latent_time = int(segment_duration * sample_rate / 256 / 8)  # VAE 8x time downsampling
+    vae_sr = models.get('vae_sample_rate', 32000)
+    vae_hop = models.get('vae_hop_length', 320)
+    # VAE kompresja: mel_frames = duration * sr / hop, latent_time = mel_frames / 8
+    latent_time = int(segment_duration * vae_sr / vae_hop / 8)
     latent_height = 16  # VAE spatial compression: 128 mels -> 16
     
     # Prepare voice embeddings (distinguish resemblyzer vs ecapa)
@@ -937,7 +948,7 @@ def generate_full_song(
     device: torch.device,
     voice_embedding: Optional[torch.Tensor] = None,  # Renamed from voice_ref
     phonemes_ipa: Optional[str] = None,  # 📝 Lyrics phonemes
-    sample_rate: int = 22050,
+    sample_rate: int = None,  # Auto-detect from VAE if None
 ) -> torch.Tensor:
     """
     Generuje pełny utwór sekcja po sekcji.
@@ -949,9 +960,14 @@ def generate_full_song(
         device: torch device
         voice_embedding: Voice embedding tensor (256 lub 192 dim)
         phonemes_ipa: Fonemy IPA dla śpiewu (opcjonalne)
-        sample_rate: Sample rate
+        sample_rate: Sample rate (auto-detect from VAE if None)
     """
+    # Auto-detect sample rate from VAE config
+    if sample_rate is None:
+        sample_rate = models.get('vae_sample_rate', 32000)
+    
     print("\n🎶 Generating audio sections...")
+    print(f"   🎵 Output sample rate: {sample_rate} Hz")
     
     if voice_embedding is not None:
         print(f"   🎤 Using voice conditioning (dim={voice_embedding.shape[-1]})")
@@ -981,10 +997,11 @@ def generate_full_song(
         )
         
         # Handle longer sections (>10s) by generating multiple segments
+        # Use tolerance to avoid floating point issues (e.g., 10.0000005 > 10.0)
         remaining_duration = section.duration - 10.0
         segment_count = 1
         
-        while remaining_duration > 0:
+        while remaining_duration > 0.1:  # At least 100ms remaining to generate another segment
             segment_count += 1
             segment_position = position + (10.0 * (segment_count - 1)) / total_duration
             
@@ -1526,6 +1543,169 @@ def align_vocals_to_instrumental(
     return aligned
 
 
+def extract_key_from_instrumental(
+    instrumental: torch.Tensor,
+    sample_rate: int,
+) -> Tuple[str, float, float]:
+    """
+    Extract musical key and average pitch from instrumental.
+    
+    Uses chroma features and Krumhansl-Schmuckler key-finding algorithm.
+    
+    Args:
+        instrumental: Audio tensor
+        sample_rate: Sample rate
+        
+    Returns:
+        Tuple of (key_name, root_frequency_hz, confidence)
+        e.g., ("C major", 261.63, 0.85)
+    """
+    import librosa
+    
+    # Convert to numpy
+    if isinstance(instrumental, torch.Tensor):
+        audio_np = instrumental.squeeze().cpu().numpy()
+    else:
+        audio_np = instrumental
+    
+    # Extract chroma features
+    chroma = librosa.feature.chroma_cqt(y=audio_np, sr=sample_rate, hop_length=512)
+    
+    # Average chroma across time
+    chroma_mean = chroma.mean(axis=1)
+    
+    # Krumhansl-Schmuckler key profiles (simplified)
+    major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+    minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+    
+    # Key names
+    key_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    
+    # Find best matching key
+    best_corr = -1
+    best_key = 'C major'
+    best_root_idx = 0
+    is_major = True
+    
+    for i in range(12):
+        # Rotate profiles
+        major_rot = np.roll(major_profile, i)
+        minor_rot = np.roll(minor_profile, i)
+        
+        major_corr = np.corrcoef(chroma_mean, major_rot)[0, 1]
+        minor_corr = np.corrcoef(chroma_mean, minor_rot)[0, 1]
+        
+        if major_corr > best_corr:
+            best_corr = major_corr
+            best_key = f"{key_names[i]} major"
+            best_root_idx = i
+            is_major = True
+        
+        if minor_corr > best_corr:
+            best_corr = minor_corr
+            best_key = f"{key_names[i]} minor"
+            best_root_idx = i
+            is_major = False
+    
+    # Calculate root frequency (C4 = 261.63 Hz as reference)
+    c4_freq = 261.63
+    root_freq = c4_freq * (2 ** (best_root_idx / 12))
+    
+    return best_key, root_freq, float(best_corr)
+
+
+def pitch_shift_vocals_to_key(
+    vocals: torch.Tensor,
+    vocals_sr: int,
+    target_key: str,
+    target_root_freq: float,
+    method: str = 'pyin',
+) -> Tuple[torch.Tensor, float]:
+    """
+    Analyze vocals pitch and shift to match instrumental key.
+    
+    Uses F0 extraction to find vocal pitch center, then calculates
+    optimal shift to fit the target key.
+    
+    Args:
+        vocals: Vocal audio tensor
+        vocals_sr: Sample rate
+        target_key: Target key name (e.g., "C major")
+        target_root_freq: Target root frequency in Hz
+        method: F0 extraction method
+        
+    Returns:
+        Tuple of (shifted_vocals, shift_semitones)
+    """
+    from tools.f0_extractor import F0Extractor
+    import librosa
+    
+    print(f"\n🎹 Pitch matching vocals to {target_key}...")
+    
+    # Convert to numpy
+    if isinstance(vocals, torch.Tensor):
+        vocals_np = vocals.squeeze().cpu().numpy()
+    else:
+        vocals_np = vocals.copy()
+    
+    # Extract F0 from vocals
+    extractor = F0Extractor(method=method, sr=vocals_sr, hop_length=256)
+    f0, voiced = extractor.extract(vocals_np, sr=vocals_sr)
+    stats = extractor.get_statistics(f0, voiced)
+    
+    if stats['voiced_ratio'] < 0.1:
+        print(f"   ⚠️ Very few voiced frames ({stats['voiced_ratio']:.0%}), skipping pitch shift")
+        return vocals, 0.0
+    
+    vocals_mean_f0 = stats['f0_mean']
+    print(f"   Vocals mean F0: {vocals_mean_f0:.1f} Hz")
+    print(f"   Target root: {target_root_freq:.1f} Hz")
+    
+    # Calculate semitone shift needed
+    # We want to shift vocals to be centered around the target key's root or fifth
+    
+    # Find nearest scale degree (root, third, or fifth are good targets)
+    # For simplicity, shift to nearest octave of root frequency
+    
+    # Find which octave of target root is closest to vocal mean
+    octaves = [target_root_freq * (2 ** i) for i in range(-2, 4)]  # Range of octaves
+    
+    # Find closest target frequency
+    distances = [abs(vocals_mean_f0 - oct) for oct in octaves]
+    closest_target = octaves[distances.index(min(distances))]
+    
+    # Calculate semitone shift
+    if vocals_mean_f0 > 0:
+        shift_semitones = 12 * np.log2(closest_target / vocals_mean_f0)
+    else:
+        shift_semitones = 0.0
+    
+    # Limit shift to reasonable range (±6 semitones = half octave)
+    shift_semitones = np.clip(shift_semitones, -6.0, 6.0)
+    
+    if abs(shift_semitones) < 0.25:
+        print(f"   ✅ Vocals already in key (shift: {shift_semitones:+.1f} semitones)")
+        return vocals, shift_semitones
+    
+    print(f"   Shifting vocals by {shift_semitones:+.1f} semitones")
+    
+    # Apply pitch shift using librosa
+    shifted_np = librosa.effects.pitch_shift(
+        vocals_np,
+        sr=vocals_sr,
+        n_steps=shift_semitones,
+    )
+    
+    # Convert back to tensor
+    shifted = torch.from_numpy(shifted_np).float()
+    if vocals.dim() > 1:
+        shifted = shifted.unsqueeze(0)
+    
+    print(f"   ✅ Pitch-shifted vocals to match {target_key}")
+    
+    return shifted, shift_semitones
+
+
 def mix_vocals_with_instrumental(
     instrumental: torch.Tensor,
     vocals: torch.Tensor,
@@ -1533,6 +1713,7 @@ def mix_vocals_with_instrumental(
     vocals_sr: int,
     mix_level: float = 0.7,
     target_sr: int = 22050,
+    pitch_match: bool = True,
 ) -> torch.Tensor:
     """
     Mix synthesized vocals with generated instrumental track.
@@ -1544,12 +1725,33 @@ def mix_vocals_with_instrumental(
         vocals_sr: Sample rate of vocals
         mix_level: Vocals volume (0.0-1.0), default 0.7
         target_sr: Output sample rate
+        pitch_match: Whether to pitch-shift vocals to match instrumental key
         
     Returns:
         Mixed audio tensor at target_sr
     """
     print(f"\n🎚️ Mixing vocals with instrumental...")
     print(f"   Vocals level: {mix_level:.0%}")
+    
+    # =========================================
+    # 🎹 Pitch Matching (NEW!)
+    # =========================================
+    if pitch_match:
+        try:
+            # Extract key from instrumental
+            key, root_freq, confidence = extract_key_from_instrumental(
+                instrumental, instrumental_sr
+            )
+            print(f"   🎼 Detected key: {key} (confidence: {confidence:.0%})")
+            
+            if confidence > 0.4:  # Only shift if reasonably confident
+                vocals, shift = pitch_shift_vocals_to_key(
+                    vocals, vocals_sr, key, root_freq
+                )
+            else:
+                print(f"   ⚠️ Low key confidence, skipping pitch match")
+        except Exception as e:
+            print(f"   ⚠️ Pitch matching failed: {e}")
     
     # Ensure same sample rate
     if instrumental_sr != target_sr:
@@ -1666,6 +1868,10 @@ def main():
                         help='Reference audio for singing voice (5-30s sample)')
     parser.add_argument('--mix_vocals', type=float, default=0.7,
                         help='Mix level for vocals vs instrumental (0.0-1.0, default: 0.7)')
+    parser.add_argument('--pitch_match', action='store_true', default=True,
+                        help='Pitch-shift TTS vocals to match instrumental key (default: True)')
+    parser.add_argument('--no_pitch_match', action='store_false', dest='pitch_match',
+                        help='Disable pitch matching (vocals may be off-key)')
     parser.add_argument('--strip_ldm_vocals', action='store_true', default=True,
                         help='Use Demucs to strip any accidental vocals from LDM output '
                              'before mixing with TTS vocals (prevents double-voice). Default: True')
@@ -1876,6 +2082,7 @@ def main():
                         vocals_sr=22050,  # Already resampled in align function
                         mix_level=args.mix_vocals,
                         target_sr=22050,
+                        pitch_match=args.pitch_match,  # NEW: Pitch-shift vocals to match key
                     )
                     
                     # Also save vocals-only version
@@ -1892,12 +2099,13 @@ def main():
                     import traceback
                     traceback.print_exc()
     
-    # Save final output
+    # Save final output - use VAE sample rate
+    output_sr = models.get('vae_sample_rate', 32000)
     audio_cpu = audio.squeeze().cpu()
-    torchaudio.save(str(output_path), audio_cpu.unsqueeze(0), 22050)
+    torchaudio.save(str(output_path), audio_cpu.unsqueeze(0), output_sr)
     
     print(f"\n✅ Saved to {output_path}")
-    print(f"   Duration: {audio_cpu.shape[-1] / 22050:.1f}s")
+    print(f"   Duration: {audio_cpu.shape[-1] / output_sr:.1f}s")
     
     # Save composition plan with voice info
     plan_path = output_path.with_suffix('.json')
