@@ -22,7 +22,6 @@ pretrained_models/
 
 # Data files (too large for git)
 *.csv
-*.json
 !**/package.json
 !**/.vscode/*.json
 data/features.csv
